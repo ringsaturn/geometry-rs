@@ -1,5 +1,3 @@
-// #![allow(dead_code)]
-
 use float_next_after::NextAfter;
 
 #[derive(Copy, Clone, Debug)]
@@ -164,41 +162,41 @@ impl Polygon {
         }
         return contains;
     }
-}
 
-pub fn new_polygon(exterior: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
-    let mut minx: f64 = exterior.get(0).unwrap().x;
-    let mut miny: f64 = exterior.get(0).unwrap().y;
-    let mut maxx: f64 = exterior.get(0).unwrap().x;
-    let mut maxy: f64 = exterior.get(0).unwrap().y;
+    pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
+        let mut minx: f64 = exterior.get(0).unwrap().x;
+        let mut miny: f64 = exterior.get(0).unwrap().y;
+        let mut maxx: f64 = exterior.get(0).unwrap().x;
+        let mut maxy: f64 = exterior.get(0).unwrap().y;
 
-    // for p in exterior.iter() {
-    for i in 0..exterior.len()-1{
-        let p = exterior[i];
-        if p.x < minx {
-            minx = p.x;
+        // for p in exterior.iter() {
+        for i in 0..exterior.len() - 1 {
+            let p = exterior[i];
+            if p.x < minx {
+                minx = p.x;
+            }
+            if p.y < miny {
+                miny = p.y;
+            }
+            if p.x > maxx {
+                maxx = p.x;
+            }
+            if p.y > maxy {
+                maxy = p.y;
+            }
         }
-        if p.y < miny {
-            miny = p.y;
-        }
-        if p.x > maxx {
-            maxx = p.x;
-        }
-        if p.y > maxy {
-            maxy = p.y;
-        }
+
+        let rect = Rect {
+            min: Point { x: minx, y: miny },
+            max: Point { x: maxx, y: maxy },
+        };
+
+        return Polygon {
+            exterior,
+            holes,
+            rect,
+        };
     }
-
-    let rect = Rect {
-        min: Point { x: minx, y: miny },
-        max: Point { x: maxx, y: maxy },
-    };
-
-    return Polygon {
-        exterior,
-        holes,
-        rect,
-    };
 }
 
 #[derive(Copy, Clone, Debug)]

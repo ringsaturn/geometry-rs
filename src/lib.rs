@@ -138,7 +138,7 @@ fn rins_contains_point(ring: Vec<Point>, point: Point, allow_on_edge: bool) -> b
     return inside;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Polygon {
     exterior: Vec<Point>,
     holes: Vec<Vec<Point>>,

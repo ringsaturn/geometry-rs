@@ -5,7 +5,7 @@ for [ringsaturn/tzf-rs](https://github.com/ringsaturn/tzf-rs).
 
 ```toml
 [dependencies]
-geometry-rs = "0.1.1"
+geometry-rs = "0.1.2"
 ```
 
 ```rust

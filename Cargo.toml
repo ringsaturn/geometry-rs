@@ -1,7 +1,14 @@
 [package]
 name = "geometry-rs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
+license-file = "LICENSE"
+description = "geometry utils"
+homepage = "http://github.com/ringsaturn/geometry-rs"
+documentation = "http://github.com/ringsaturn/geometry-rs"
+repository = "http://github.com/ringsaturn/geometry-rs"
+readme = "README.md"
+keywords = ["geometry"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

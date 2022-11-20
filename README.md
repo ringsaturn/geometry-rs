@@ -5,7 +5,7 @@ for [ringsaturn/tzf-rs](https://github.com/ringsaturn/tzf-rs).
 
 ```toml
 [dependencies]
-geometry-rs = { git =  "http://github.com/ringsaturn/geometry-rs", tag = "v0.1.0"}
+geometry-rs = "0.1.1"
 ```
 
 ```rust

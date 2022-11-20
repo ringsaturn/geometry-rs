@@ -96,7 +96,7 @@ impl Rect {
     }
 }
 
-fn segment_at_for_vec_point(exterior: Vec<Point>, index: i64) -> Segment {
+fn segment_at_for_vec_point(exterior: &Vec<Point>, index: i64) -> Segment {
     let seg_a: Point = exterior[index as usize];
     let mut seg_b_index = index;
     if seg_b_index == (exterior.len() - 1) as i64 {
@@ -108,7 +108,7 @@ fn segment_at_for_vec_point(exterior: Vec<Point>, index: i64) -> Segment {
     return Segment { a: seg_a, b: seg_b };
 }
 
-fn rins_contains_point(ring: Vec<Point>, point: Point, allow_on_edge: bool) -> bool {
+fn rins_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> bool {
     let rect = Rect {
         min: Point {
             x: std::f64::NEG_INFINITY,
@@ -122,7 +122,7 @@ fn rins_contains_point(ring: Vec<Point>, point: Point, allow_on_edge: bool) -> b
     let mut inside: bool = false;
     let n = (ring.len() - 1) as i64;
     for i in 0..n {
-        let seg = segment_at_for_vec_point(ring.to_owned(), i);
+        let seg = segment_at_for_vec_point(&ring, i);
         if seg.rect().intersects_rect(rect) {
             let res = raycast(&seg, point);
             // print!("res= inside:{:?} on:{:?}\n", res.inside, res.on);
@@ -151,13 +151,13 @@ impl Polygon {
             return false;
         }
 
-        if !rins_contains_point(self.exterior.to_owned(), p, false) {
+        if !rins_contains_point(&self.exterior, p, false) {
             return false;
         }
 
         let mut contains: bool = true;
         for hole in self.holes.iter() {
-            if rins_contains_point(hole.to_owned(), p, false) {
+            if rins_contains_point(&hole, p, false) {
                 contains = false;
                 break;
             }
@@ -172,7 +172,9 @@ pub fn new_polygon(exterior: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
     let mut maxx: f64 = exterior.get(0).unwrap().x;
     let mut maxy: f64 = exterior.get(0).unwrap().y;
 
-    for p in exterior.iter() {
+    // for p in exterior.iter() {
+    for i in 0..exterior.len()-1{
+        let p = exterior[i];
         if p.x < minx {
             minx = p.x;
         }

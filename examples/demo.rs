@@ -3,7 +3,7 @@ use std::vec;
 use geometry_rs;
 
 fn main() {
-    let poly = geometry_rs::new_polygon(
+    let poly = geometry_rs::Polygon::new(
         vec![
             geometry_rs::Point {
                 x: 90.48826291293898,

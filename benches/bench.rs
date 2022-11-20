@@ -6,7 +6,7 @@ mod benches_polygon {
     use test::Bencher;
     #[bench]
     fn poly_contain_point(b: &mut Bencher) {
-        let poly = geometry_rs::new_polygon(
+        let poly = geometry_rs::Polygon::new(
             vec![
                 geometry_rs::Point {
                     x: 90.48826291293898,

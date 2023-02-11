@@ -1,4 +1,9 @@
+#![allow(unused_imports)]
+#![allow(dead_code)]
+
 use float_next_after::NextAfter;
+use rtree_rs::RTree;
+use rtree_rs::Rect as RTreeRect;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Point {
@@ -106,7 +111,12 @@ fn segment_at_for_vec_point(exterior: &Vec<Point>, index: i64) -> Segment {
     return Segment { a: seg_a, b: seg_b };
 }
 
-fn rins_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> bool {
+fn rings_contains_point(
+    ring: &Vec<Point>,
+    _ring_rtree: &rtree_rs::RTree<2, f64, i64>,
+    point: Point,
+    allow_on_edge: bool,
+) -> bool {
     let rect = Rect {
         min: Point {
             x: std::f64::NEG_INFINITY,
@@ -118,11 +128,12 @@ fn rins_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> 
         },
     };
     let mut inside: bool = false;
-    let n = (ring.len() - 1) as i64;
+    let n: i64 = (ring.len() - 1) as i64;
     for i in 0..n {
-        let seg = segment_at_for_vec_point(&ring, i);
+        let seg: Segment = segment_at_for_vec_point(&ring, i);
+
         if seg.rect().intersects_rect(rect) {
-            let res = raycast(&seg, point);
+            let res: RaycastResult = raycast(&seg, point);
             // print!("res= inside:{:?} on:{:?}\n", res.inside, res.on);
             if res.on {
                 inside = allow_on_edge;
@@ -136,10 +147,47 @@ fn rins_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> 
     return inside;
 }
 
-#[derive(Clone, Debug)]
+fn rings_contains_point_by_rtree_index(
+    ring: &Vec<Point>,
+    ring_rtree: &rtree_rs::RTree<2, f64, i64>,
+    point: Point,
+    allow_on_edge: bool,
+) -> bool {
+    let rect = Rect {
+        min: Point {
+            x: std::f64::NEG_INFINITY,
+            y: point.y,
+        },
+        max: Point {
+            x: std::f64::INFINITY,
+            y: point.y,
+        },
+    };
+    for item in ring_rtree.search(RTreeRect::new(
+        [std::f64::NEG_INFINITY, point.y],
+        [std::f64::INFINITY, point.y],
+    )) {
+        let seg: Segment = segment_at_for_vec_point(&ring, *item.data);
+        let irect = seg.rect();
+        if irect.intersects_rect(rect) {
+            let res: RaycastResult = raycast(&seg, point);
+            if res.on {
+                return allow_on_edge;
+            }
+            if res.inside {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// #[derive(Clone, Debug)]
 pub struct Polygon {
     exterior: Vec<Point>,
+    exterior_rtree: rtree_rs::RTree<2, f64, i64>,
     holes: Vec<Vec<Point>>,
+    holes_rtree: Vec<rtree_rs::RTree<2, f64, i64>>,
     rect: Rect,
 }
 
@@ -149,16 +197,19 @@ impl Polygon {
             return false;
         }
 
-        if !rins_contains_point(&self.exterior, p, false) {
+        if !rings_contains_point_by_rtree_index(&self.exterior, &self.exterior_rtree, p, false) {
             return false;
         }
 
         let mut contains: bool = true;
+        let mut i: usize = 0;
         for hole in self.holes.iter() {
-            if rins_contains_point(&hole, p, false) {
+            let tr = self.holes_rtree.get(i).unwrap();
+            if rings_contains_point_by_rtree_index(&hole, &tr, p, false) {
                 contains = false;
                 break;
             }
+            i += 1;
         }
         return contains;
     }
@@ -191,9 +242,41 @@ impl Polygon {
             max: Point { x: maxx, y: maxy },
         };
 
+        let mut exterior_rtree = RTree::new();
+        let n = (exterior.len() - 1) as i64;
+        for i in 0..n {
+            let segrect = segment_at_for_vec_point(&exterior, i).rect();
+            exterior_rtree.insert(
+                RTreeRect::new(
+                    [segrect.min.x, segrect.min.y],
+                    [segrect.max.x, segrect.max.y],
+                ),
+                i as i64,
+            );
+        }
+
+        let mut holes_rtree = vec![];
+        for hole_poly in holes.iter() {
+            let mut hole_rtre = RTree::new();
+            let n = (hole_poly.len() - 1) as i64;
+            for i in 0..n {
+                let segrect = segment_at_for_vec_point(&hole_poly, i).rect();
+                hole_rtre.insert(
+                    RTreeRect::new(
+                        [segrect.min.x, segrect.min.y],
+                        [segrect.max.x, segrect.max.y],
+                    ),
+                    i as i64,
+                );
+            }
+            holes_rtree.push(hole_rtre);
+        }
+
         return Polygon {
             exterior,
+            exterior_rtree,
             holes,
+            holes_rtree,
             rect,
         };
     }

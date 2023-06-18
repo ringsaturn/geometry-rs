@@ -1,3 +1,6 @@
+//! Rewrite some features of [tidwall/geometry](https://github.com/tidwall/geometry) to Rust
+//! for [ringsaturn/tzf-rs](https://github.com/ringsaturn/tzf-rs).
+
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
@@ -111,12 +114,7 @@ fn segment_at_for_vec_point(exterior: &Vec<Point>, index: i64) -> Segment {
     return Segment { a: seg_a, b: seg_b };
 }
 
-fn rings_contains_point(
-    ring: &Vec<Point>,
-    _ring_rtree: &rtree_rs::RTree<2, f64, i64>,
-    point: Point,
-    allow_on_edge: bool,
-) -> bool {
+fn rings_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> bool {
     let rect = Rect {
         min: Point {
             x: std::f64::NEG_INFINITY,
@@ -189,14 +187,14 @@ pub struct Polygon {
     holes: Vec<Vec<Point>>,
     holes_rtree: Vec<rtree_rs::RTree<2, f64, i64>>,
     rect: Rect,
+    with_index: bool,
 }
 
 impl Polygon {
-    pub fn contains_point(&self, p: Point) -> bool {
-        if !self.rect.contains_point(p) {
-            return false;
-        }
-
+    /// Point-In-Polygon check with RTree index.
+    /// `with_index` param must true for this query.
+    /// Query speed is faster compare with [contains_point_normal].
+    fn contains_point_with_index(&self, p: Point) -> bool {
         if !rings_contains_point_by_rtree_index(&self.exterior, &self.exterior_rtree, p, false) {
             return false;
         }
@@ -209,12 +207,44 @@ impl Polygon {
                 contains = false;
                 break;
             }
+
             i += 1;
         }
         return contains;
     }
 
-    pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
+    /// Point-In-Polygon check, the normal way.
+    /// It's most used algorithm implementation, port from Go's [geojson]
+    ///
+    /// [geojson]: https://github.com/tidwall/geojson
+    fn contains_point_normal(&self, p: Point) -> bool {
+        if !rings_contains_point(&self.exterior, p, false) {
+            return false;
+        }
+        let mut contains: bool = true;
+        for hole in self.holes.iter() {
+            if rings_contains_point(&hole, p, false) {
+                contains = false;
+                break;
+            }
+        }
+        return contains;
+    }
+
+    /// Do point-in-polygon search.
+    ///
+    /// NOTE: `with_index` could increase performance, but requires more memory.
+    pub fn contains_point(&self, p: Point) -> bool {
+        if !self.rect.contains_point(p) {
+            return false;
+        }
+        if self.with_index {
+            return self.contains_point_with_index(p);
+        }
+        return self.contains_point_normal(p);
+    }
+
+    pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>, with_index: bool) -> Polygon {
         let mut minx: f64 = exterior.get(0).unwrap().x;
         let mut miny: f64 = exterior.get(0).unwrap().y;
         let mut maxx: f64 = exterior.get(0).unwrap().x;
@@ -246,13 +276,15 @@ impl Polygon {
         let n = (exterior.len() - 1) as i64;
         for i in 0..n {
             let segrect = segment_at_for_vec_point(&exterior, i).rect();
-            exterior_rtree.insert(
-                RTreeRect::new(
-                    [segrect.min.x, segrect.min.y],
-                    [segrect.max.x, segrect.max.y],
-                ),
-                i as i64,
-            );
+            if with_index {
+                exterior_rtree.insert(
+                    RTreeRect::new(
+                        [segrect.min.x, segrect.min.y],
+                        [segrect.max.x, segrect.max.y],
+                    ),
+                    i as i64,
+                );
+            }
         }
 
         let mut holes_rtree = vec![];
@@ -261,15 +293,19 @@ impl Polygon {
             let n = (hole_poly.len() - 1) as i64;
             for i in 0..n {
                 let segrect = segment_at_for_vec_point(&hole_poly, i).rect();
-                hole_rtre.insert(
-                    RTreeRect::new(
-                        [segrect.min.x, segrect.min.y],
-                        [segrect.max.x, segrect.max.y],
-                    ),
-                    i as i64,
-                );
+                if with_index {
+                    hole_rtre.insert(
+                        RTreeRect::new(
+                            [segrect.min.x, segrect.min.y],
+                            [segrect.max.x, segrect.max.y],
+                        ),
+                        i as i64,
+                    );
+                }
             }
-            holes_rtree.push(hole_rtre);
+            if with_index {
+                holes_rtree.push(hole_rtre);
+            }
         }
 
         return Polygon {
@@ -278,6 +314,7 @@ impl Polygon {
             holes,
             holes_rtree,
             rect,
+            with_index,
         };
     }
 }
@@ -290,28 +327,28 @@ pub struct Segment {
 
 impl Segment {
     pub fn rect(&self) -> Rect {
-        let mut minx: f64 = self.a.x;
-        let mut miny: f64 = self.a.y;
-        let mut maxx: f64 = self.b.x;
-        let mut maxy: f64 = self.b.y;
+        let mut min_x: f64 = self.a.x;
+        let mut min_y: f64 = self.a.y;
+        let mut max_x: f64 = self.b.x;
+        let mut max_y: f64 = self.b.y;
 
-        if minx > maxx {
-            let actualminx = maxx;
-            let actualmaxx = minx;
-            minx = actualminx;
-            maxx = actualmaxx;
+        if min_x > max_x {
+            let actual_min_x = max_x;
+            let actual_max_x = min_x;
+            min_x = actual_min_x;
+            max_x = actual_max_x;
         }
 
-        if miny > maxy {
-            let actualminy = maxy;
-            let actualmaxy = miny;
-            miny = actualminy;
-            maxy = actualmaxy;
+        if min_y > max_y {
+            let actual_min_y = max_y;
+            let actual_max_y = min_y;
+            min_y = actual_min_y;
+            max_y = actual_max_y;
         }
 
         return Rect {
-            min: Point { x: minx, y: miny },
-            max: Point { x: maxx, y: maxy },
+            min: Point { x: min_x, y: min_y },
+            max: Point { x: max_x, y: max_y },
         };
     }
 }

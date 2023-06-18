@@ -31,6 +31,7 @@ mod benches_polygon {
                 },
             ],
             vec![],
+            false,
         );
         return poly;
     }

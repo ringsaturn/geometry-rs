@@ -27,6 +27,7 @@ fn main() {
             },
         ],
         vec![],
+        false,
     );
 
     let p_out = geometry_rs::Point {

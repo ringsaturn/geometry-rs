@@ -1594,6 +1594,7 @@ mod benches_az_polygon {
                 
             ],
             vec![],
+            true,
         );
         return poly;
     }

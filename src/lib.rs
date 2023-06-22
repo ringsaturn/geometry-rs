@@ -1,8 +1,4 @@
-//! Rewrite some features of [tidwall/geometry](https://github.com/tidwall/geometry) to Rust
-//! for [ringsaturn/tzf-rs](https://github.com/ringsaturn/tzf-rs).
-
-#![allow(unused_imports)]
-#![allow(dead_code)]
+#![doc = include_str!("../README.md")]
 
 use float_next_after::NextAfter;
 use rtree_rs::RTree;
@@ -180,7 +176,6 @@ fn rings_contains_point_by_rtree_index(
     return false;
 }
 
-// #[derive(Clone, Debug)]
 pub struct Polygon {
     exterior: Vec<Point>,
     exterior_rtree: rtree_rs::RTree<2, f64, i64>,
@@ -232,8 +227,6 @@ impl Polygon {
     }
 
     /// Do point-in-polygon search.
-    ///
-    /// NOTE: `with_index` could increase performance, but requires more memory.
     pub fn contains_point(&self, p: Point) -> bool {
         if !self.rect.contains_point(p) {
             return false;
@@ -244,6 +237,12 @@ impl Polygon {
         return self.contains_point_normal(p);
     }
 
+    /// Create a new Polygon instance from exterior and holes.
+    ///
+    /// Please note that set `with_index` to true will increase performance, but requires more memory.
+    /// See [#4] for more details.
+    ///
+    /// [#4]: https://github.com/ringsaturn/geometry-rs/pull/4
     pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>, with_index: bool) -> Polygon {
         let mut minx: f64 = exterior.get(0).unwrap().x;
         let mut miny: f64 = exterior.get(0).unwrap().y;

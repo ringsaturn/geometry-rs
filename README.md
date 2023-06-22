@@ -3,9 +3,8 @@
 Rewrite parts of [tidwall/geometry](https://github.com/tidwall/geometry) to Rust
 for [ringsaturn/tzf-rs](https://github.com/ringsaturn/tzf-rs).
 
-```toml
-[dependencies]
-geometry-rs = "0.1.2"
+```bash
+cargo add geometry-rs
 ```
 
 ```rust
@@ -38,6 +37,7 @@ fn main() {
             },
         ],
         vec![],
+        false,
     );
 
     let p_out = geometry_rs::Point {

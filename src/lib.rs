@@ -243,6 +243,52 @@ impl Polygon {
     /// See [#4] for more details.
     ///
     /// [#4]: https://github.com/ringsaturn/geometry-rs/pull/4
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// use std::vec;
+    /// use geometry_rs;
+    /// let poly = geometry_rs::Polygon::new(
+    ///     vec![
+    ///         geometry_rs::Point {
+    ///             x: 90.48826291293898,
+    ///             y: 45.951129815858565,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 90.48826291293898,
+    ///             y: 27.99437617512571,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 122.83201291294,
+    ///             y: 27.99437617512571,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 122.83201291294,
+    ///             y: 45.951129815858565,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 90.48826291293898,
+    ///             y: 45.951129815858565,
+    ///         },
+    ///     ],
+    ///     vec![],
+    ///     false,
+    /// );
+    ///
+    /// let p_out = geometry_rs::Point {
+    ///     x: 130.74216916294148,
+    ///     y: 37.649011392900306,
+    /// };
+    /// 
+    /// print!("{:?}\n", poly.contains_point(p_out));
+    /// 
+    /// let p_in = geometry_rs::Point {
+    ///     x: 99.9804504129416,
+    ///     y: 39.70716466970461,
+    /// };
+    /// print!("{:?}\n", poly.contains_point(p_in));
+    /// ```
     pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>, with_index: bool) -> Polygon {
         let mut minx: f64 = exterior.get(0).unwrap().x;
         let mut miny: f64 = exterior.get(0).unwrap().y;

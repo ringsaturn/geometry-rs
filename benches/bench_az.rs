@@ -5,7 +5,28 @@ mod benches_az_polygon {
     extern crate test;
     use test::Bencher;
 
-    // test data copy from https://github.com/unitedstates/districts/blob/gh-pages/states/AZ/shape.geojson
+    /* Test data copy from https://github.com/unitedstates/districts/blob/gh-pages/states/AZ/shape.geojson
+
+    Python code to generate the data:
+        ```python
+        import json
+
+        TPL = """geometry_rs::Point {x: {lng}, y: {lat}},"""
+        
+        with open("./az.geojson") as f:
+            data = json.loads(f.read())
+        
+        coordinates = data["coordinates"][0][0]
+        # print(len(coordinates))
+        gens = []
+        for coord in coordinates:
+            # gens.append(TPL.format(lng=coord[0], lat=coord[1]))
+            gens.append(TPL.replace("{lng}", str(coord[0])).replace("{lat}", str(coord[1])))
+        gen_text = "\n".join(gens)
+        print(gen_text)
+        ```
+    */
+
     fn load_poly() -> geometry_rs::Polygon{
         let poly = geometry_rs::Polygon::new(
             vec![
@@ -1594,6 +1615,7 @@ mod benches_az_polygon {
                 
             ],
             vec![],
+            true,
         );
         return poly;
     }

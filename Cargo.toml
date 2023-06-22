@@ -1,6 +1,6 @@
 [package]
 name = "geometry-rs"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license-file = "LICENSE"
 description = "geometry utils"
@@ -15,6 +15,7 @@ keywords = ["geometry"]
 [dependencies]
 
 float_next_after = "1.0.0"
+rtree_rs = "0.1.4"
 
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }

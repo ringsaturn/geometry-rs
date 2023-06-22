@@ -1,4 +1,8 @@
+#![doc = include_str!("../README.md")]
+
 use float_next_after::NextAfter;
+use rtree_rs::RTree;
+use rtree_rs::Rect as RTreeRect;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Point {
@@ -106,7 +110,7 @@ fn segment_at_for_vec_point(exterior: &Vec<Point>, index: i64) -> Segment {
     return Segment { a: seg_a, b: seg_b };
 }
 
-fn rins_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> bool {
+fn rings_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> bool {
     let rect = Rect {
         min: Point {
             x: std::f64::NEG_INFINITY,
@@ -118,11 +122,12 @@ fn rins_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> 
         },
     };
     let mut inside: bool = false;
-    let n = (ring.len() - 1) as i64;
+    let n: i64 = (ring.len() - 1) as i64;
     for i in 0..n {
-        let seg = segment_at_for_vec_point(&ring, i);
+        let seg: Segment = segment_at_for_vec_point(&ring, i);
+
         if seg.rect().intersects_rect(rect) {
-            let res = raycast(&seg, point);
+            let res: RaycastResult = raycast(&seg, point);
             // print!("res= inside:{:?} on:{:?}\n", res.inside, res.on);
             if res.on {
                 inside = allow_on_edge;
@@ -136,26 +141,84 @@ fn rins_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> 
     return inside;
 }
 
-#[derive(Clone, Debug)]
+fn rings_contains_point_by_rtree_index(
+    ring: &Vec<Point>,
+    ring_rtree: &rtree_rs::RTree<2, f64, i64>,
+    point: Point,
+    allow_on_edge: bool,
+) -> bool {
+    let rect = Rect {
+        min: Point {
+            x: std::f64::NEG_INFINITY,
+            y: point.y,
+        },
+        max: Point {
+            x: std::f64::INFINITY,
+            y: point.y,
+        },
+    };
+    for item in ring_rtree.search(RTreeRect::new(
+        [std::f64::NEG_INFINITY, point.y],
+        [std::f64::INFINITY, point.y],
+    )) {
+        let seg: Segment = segment_at_for_vec_point(&ring, *item.data);
+        let irect = seg.rect();
+        if irect.intersects_rect(rect) {
+            let res: RaycastResult = raycast(&seg, point);
+            if res.on {
+                return allow_on_edge;
+            }
+            if res.inside {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 pub struct Polygon {
     exterior: Vec<Point>,
+    exterior_rtree: rtree_rs::RTree<2, f64, i64>,
     holes: Vec<Vec<Point>>,
+    holes_rtree: Vec<rtree_rs::RTree<2, f64, i64>>,
     rect: Rect,
+    with_index: bool,
 }
 
 impl Polygon {
-    pub fn contains_point(&self, p: Point) -> bool {
-        if !self.rect.contains_point(p) {
-            return false;
-        }
-
-        if !rins_contains_point(&self.exterior, p, false) {
+    /// Point-In-Polygon check with RTree index.
+    /// `with_index` param must true for this query.
+    /// Query speed is faster compare with [contains_point_normal].
+    fn contains_point_with_index(&self, p: Point) -> bool {
+        if !rings_contains_point_by_rtree_index(&self.exterior, &self.exterior_rtree, p, false) {
             return false;
         }
 
         let mut contains: bool = true;
+        let mut i: usize = 0;
         for hole in self.holes.iter() {
-            if rins_contains_point(&hole, p, false) {
+            let tr = self.holes_rtree.get(i).unwrap();
+            if rings_contains_point_by_rtree_index(&hole, &tr, p, false) {
+                contains = false;
+                break;
+            }
+
+            i += 1;
+        }
+        return contains;
+    }
+
+    /// Point-In-Polygon check, the normal way.
+    /// It's most used algorithm implementation, port from Go's [geojson]
+    ///
+    /// [geojson]: https://github.com/tidwall/geojson
+    fn contains_point_normal(&self, p: Point) -> bool {
+        if !rings_contains_point(&self.exterior, p, false) {
+            return false;
+        }
+        let mut contains: bool = true;
+        for hole in self.holes.iter() {
+            if rings_contains_point(&hole, p, false) {
                 contains = false;
                 break;
             }
@@ -163,7 +226,70 @@ impl Polygon {
         return contains;
     }
 
-    pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
+    /// Do point-in-polygon search.
+    pub fn contains_point(&self, p: Point) -> bool {
+        if !self.rect.contains_point(p) {
+            return false;
+        }
+        if self.with_index {
+            return self.contains_point_with_index(p);
+        }
+        return self.contains_point_normal(p);
+    }
+
+    /// Create a new Polygon instance from exterior and holes.
+    ///
+    /// Please note that set `with_index` to true will increase performance, but requires more memory.
+    /// See [#4] for more details.
+    ///
+    /// [#4]: https://github.com/ringsaturn/geometry-rs/pull/4
+    ///
+    /// Example:
+    ///
+    /// ```rust
+    /// use std::vec;
+    /// use geometry_rs;
+    /// let poly = geometry_rs::Polygon::new(
+    ///     vec![
+    ///         geometry_rs::Point {
+    ///             x: 90.48826291293898,
+    ///             y: 45.951129815858565,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 90.48826291293898,
+    ///             y: 27.99437617512571,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 122.83201291294,
+    ///             y: 27.99437617512571,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 122.83201291294,
+    ///             y: 45.951129815858565,
+    ///         },
+    ///         geometry_rs::Point {
+    ///             x: 90.48826291293898,
+    ///             y: 45.951129815858565,
+    ///         },
+    ///     ],
+    ///     vec![],
+    ///     false,
+    /// );
+    ///
+    /// let p_out = geometry_rs::Point {
+    ///     x: 130.74216916294148,
+    ///     y: 37.649011392900306,
+    /// };
+    /// 
+    /// print!("{:?}\n", poly.contains_point(p_out));
+    /// 
+    /// let p_in = geometry_rs::Point {
+    ///     x: 99.9804504129416,
+    ///     y: 39.70716466970461,
+    /// };
+    /// print!("{:?}\n", poly.contains_point(p_in));
+    /// ```
+    pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>, with_index: bool) -> Polygon {
         let mut minx: f64 = exterior.get(0).unwrap().x;
         let mut miny: f64 = exterior.get(0).unwrap().y;
         let mut maxx: f64 = exterior.get(0).unwrap().x;
@@ -191,10 +317,49 @@ impl Polygon {
             max: Point { x: maxx, y: maxy },
         };
 
+        let mut exterior_rtree = RTree::new();
+        let n = (exterior.len() - 1) as i64;
+        for i in 0..n {
+            let segrect = segment_at_for_vec_point(&exterior, i).rect();
+            if with_index {
+                exterior_rtree.insert(
+                    RTreeRect::new(
+                        [segrect.min.x, segrect.min.y],
+                        [segrect.max.x, segrect.max.y],
+                    ),
+                    i as i64,
+                );
+            }
+        }
+
+        let mut holes_rtree = vec![];
+        for hole_poly in holes.iter() {
+            let mut hole_rtre = RTree::new();
+            let n = (hole_poly.len() - 1) as i64;
+            for i in 0..n {
+                let segrect = segment_at_for_vec_point(&hole_poly, i).rect();
+                if with_index {
+                    hole_rtre.insert(
+                        RTreeRect::new(
+                            [segrect.min.x, segrect.min.y],
+                            [segrect.max.x, segrect.max.y],
+                        ),
+                        i as i64,
+                    );
+                }
+            }
+            if with_index {
+                holes_rtree.push(hole_rtre);
+            }
+        }
+
         return Polygon {
             exterior,
+            exterior_rtree,
             holes,
+            holes_rtree,
             rect,
+            with_index,
         };
     }
 }
@@ -207,28 +372,28 @@ pub struct Segment {
 
 impl Segment {
     pub fn rect(&self) -> Rect {
-        let mut minx: f64 = self.a.x;
-        let mut miny: f64 = self.a.y;
-        let mut maxx: f64 = self.b.x;
-        let mut maxy: f64 = self.b.y;
+        let mut min_x: f64 = self.a.x;
+        let mut min_y: f64 = self.a.y;
+        let mut max_x: f64 = self.b.x;
+        let mut max_y: f64 = self.b.y;
 
-        if minx > maxx {
-            let actualminx = maxx;
-            let actualmaxx = minx;
-            minx = actualminx;
-            maxx = actualmaxx;
+        if min_x > max_x {
+            let actual_min_x = max_x;
+            let actual_max_x = min_x;
+            min_x = actual_min_x;
+            max_x = actual_max_x;
         }
 
-        if miny > maxy {
-            let actualminy = maxy;
-            let actualmaxy = miny;
-            miny = actualminy;
-            maxy = actualmaxy;
+        if min_y > max_y {
+            let actual_min_y = max_y;
+            let actual_max_y = min_y;
+            min_y = actual_min_y;
+            max_y = actual_max_y;
         }
 
         return Rect {
-            min: Point { x: minx, y: miny },
-            max: Point { x: maxx, y: maxy },
+            min: Point { x: min_x, y: min_y },
+            max: Point { x: max_x, y: max_y },
         };
     }
 }

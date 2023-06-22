@@ -54,3 +54,7 @@ fn main() {
     print!("{:?}\n", poly.contains_point(p_in));
 }
 ```
+
+## TODO
+
+- [ ] Use compressed data of RTree index, since too many memory costs.

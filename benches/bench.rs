@@ -6,7 +6,7 @@ mod benches_polygon {
     extern crate test;
     use test::Bencher;
 
-    fn load_polygon() -> geometry_rs::Polygon{
+    fn load_polygon() -> geometry_rs::Polygon {
         let poly = geometry_rs::Polygon::new(
             vec![
                 geometry_rs::Point {
@@ -31,7 +31,6 @@ mod benches_polygon {
                 },
             ],
             vec![],
-            false,
         );
         return poly;
     }
@@ -39,7 +38,7 @@ mod benches_polygon {
     #[bench]
     fn poly_contain_point(b: &mut Bencher) {
         let poly = load_polygon();
-    
+
         let p_in = geometry_rs::Point {
             x: 99.9804504129416,
             y: 39.70716466970461,

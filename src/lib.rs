@@ -273,23 +273,30 @@ impl Polygon {
     ///         },
     ///     ],
     ///     vec![],
-    ///     false,
     /// );
     ///
     /// let p_out = geometry_rs::Point {
     ///     x: 130.74216916294148,
     ///     y: 37.649011392900306,
     /// };
-    /// 
+    ///
     /// print!("{:?}\n", poly.contains_point(p_out));
-    /// 
+    ///
     /// let p_in = geometry_rs::Point {
     ///     x: 99.9804504129416,
     ///     y: 39.70716466970461,
     /// };
     /// print!("{:?}\n", poly.contains_point(p_in));
     /// ```
-    pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>, with_index: bool) -> Polygon {
+    pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
+        return Polygon::new_with_rtree_index_opt(exterior, holes, false);
+    }
+
+    pub fn new_with_rtree_index_opt(
+        exterior: Vec<Point>,
+        holes: Vec<Vec<Point>>,
+        with_index: bool,
+    ) -> Polygon {
         let mut minx: f64 = exterior.get(0).unwrap().x;
         let mut miny: f64 = exterior.get(0).unwrap().y;
         let mut maxx: f64 = exterior.get(0).unwrap().x;

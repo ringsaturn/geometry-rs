@@ -4,9 +4,9 @@ version = "0.2.1"
 edition = "2021"
 license-file = "LICENSE"
 description = "geometry utils"
-homepage = "http://github.com/ringsaturn/geometry-rs"
+homepage = "https://github.com/ringsaturn/geometry-rs"
 documentation = "https://docs.rs/geometry-rs/latest/geometry_rs/"
-repository = "http://github.com/ringsaturn/geometry-rs"
+repository = "https://github.com/ringsaturn/geometry-rs"
 readme = "README.md"
 keywords = ["geometry"]
 

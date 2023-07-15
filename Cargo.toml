@@ -2,7 +2,7 @@
 name = "geometry-rs"
 version = "0.2.1"
 edition = "2021"
-license-file = "LICENSE"
+license = "MIT"
 description = "geometry utils"
 homepage = "https://github.com/ringsaturn/geometry-rs"
 documentation = "https://docs.rs/geometry-rs/latest/geometry_rs/"

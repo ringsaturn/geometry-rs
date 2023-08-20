@@ -1,6 +1,6 @@
 #![feature(test)]
 #[cfg(test)]
-mod benches_az_polygon {
+mod benches_tx_polygon {
     extern crate test;
     use geo::Contains;
     use serde_derive::Deserialize;
@@ -16,7 +16,7 @@ mod benches_az_polygon {
 
     // Test data copy from https://github.com/unitedstates/districts/blob/gh-pages/states/AZ/shape.geojson
     fn load_json_data() -> Vec<u8> {
-        include_bytes!("./az.geojson").to_vec()
+        include_bytes!("./tx.geojson").to_vec()
     }
 
     fn load_poly(rtree_flag: bool) -> geometry_rs::Polygon {
@@ -40,7 +40,7 @@ mod benches_az_polygon {
     #[bench]
     fn poly_contain_point(b: &mut Bencher) {
         let poly = load_poly(false);
-        let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
+        let p_in = geometry_rs::Point { x: -98.52539, y: 29.363027 };
 
         b.iter(|| {
             let _ = poly.contains_point(p_in);
@@ -51,8 +51,8 @@ mod benches_az_polygon {
     fn poly_not_contain_point(b: &mut Bencher) {
         let poly = load_poly(false);
         let p_in = geometry_rs::Point {
-            x: -114.477539062,
-            y: 33.99802726,
+            x: -101.953125,
+            y: 29.324720161,
         };
 
         b.iter(|| {
@@ -63,7 +63,7 @@ mod benches_az_polygon {
     #[bench]
     fn poly_with_rtree_contain_point(b: &mut Bencher) {
         let poly = load_poly(true);
-        let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
+        let p_in = geometry_rs::Point { x: -98.52539, y: 29.363027 };
 
         b.iter(|| {
             let _ = poly.contains_point(p_in);
@@ -74,8 +74,8 @@ mod benches_az_polygon {
     fn poly_with_rtree_not_contain_point(b: &mut Bencher) {
         let poly = load_poly(true);
         let p_in = geometry_rs::Point {
-            x: -114.477539062,
-            y: 33.99802726,
+            x: -101.953125,
+            y: 29.324720161,
         };
 
         b.iter(|| {
@@ -104,7 +104,7 @@ mod benches_az_polygon {
     #[bench]
     fn geo_poly_contain_point(b: &mut Bencher) {
         let poly = load_geo_poly();
-        let p_in = geo::Point(geo::Coord { x: -112.0, y: 33.0 });
+        let p_in = geo::Point(geo::Coord { x: -98.52539, y: 29.363027 });
 
         b.iter(|| {
             let _ = poly.contains(&p_in);
@@ -115,8 +115,8 @@ mod benches_az_polygon {
     fn geo_poly_not_contain_point(b: &mut Bencher) {
         let poly = load_geo_poly();
         let p_in = geo::Point(geo::Coord {
-            x: -114.477539062,
-            y: 33.99802726,
+            x: -101.953125,
+            y: 29.324720161,
         });
 
         b.iter(|| {

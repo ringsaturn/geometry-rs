@@ -18,7 +18,7 @@ pub struct Rect {
 
 impl Rect {
     pub fn contains_point(&self, p: Point) -> bool {
-        return p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y;
+        p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y
     }
 
     pub fn intersects_rect(&self, other: Rect) -> bool {
@@ -28,7 +28,7 @@ impl Rect {
         if self.min.x > other.max.x || self.max.x < other.min.x {
             return false;
         }
-        return true;
+        true
     }
 
     pub fn nw(&self) -> Point {
@@ -89,11 +89,11 @@ impl Rect {
 
     pub fn segment_at(&self, index: i64) -> Segment {
         match index {
-            0 => return self.south(),
-            1 => return self.east(),
-            2 => return self.north(),
-            3 => return self.west(),
-            _ => return self.south(), // TODO(ringsaturn): raise err
+            0 => self.south(),
+            1 => self.east(),
+            2 => self.north(),
+            3 => self.west(),
+            _ => self.south(), // TODO(ringsaturn): raise err
         }
     }
 }
@@ -107,7 +107,7 @@ fn segment_at_for_vec_point(exterior: &Vec<Point>, index: i64) -> Segment {
         seg_b_index += 1
     }
     let seg_b: Point = exterior[seg_b_index as usize];
-    return Segment { a: seg_a, b: seg_b };
+    Segment { a: seg_a, b: seg_b }
 }
 
 fn rings_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) -> bool {
@@ -124,7 +124,7 @@ fn rings_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) ->
     let mut inside: bool = false;
     let n: i64 = (ring.len() - 1) as i64;
     for i in 0..n {
-        let seg: Segment = segment_at_for_vec_point(&ring, i);
+        let seg: Segment = segment_at_for_vec_point(ring, i);
 
         if seg.rect().intersects_rect(rect) {
             let res: RaycastResult = raycast(&seg, point);
@@ -138,7 +138,7 @@ fn rings_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) ->
             }
         }
     }
-    return inside;
+    inside
 }
 
 fn rings_contains_point_by_rtree_index(
@@ -161,7 +161,7 @@ fn rings_contains_point_by_rtree_index(
         [std::f64::NEG_INFINITY, point.y],
         [std::f64::INFINITY, point.y],
     )) {
-        let seg: Segment = segment_at_for_vec_point(&ring, *item.data);
+        let seg: Segment = segment_at_for_vec_point(ring, *item.data);
         let irect = seg.rect();
         if irect.intersects_rect(rect) {
             let res: RaycastResult = raycast(&seg, point);
@@ -173,7 +173,7 @@ fn rings_contains_point_by_rtree_index(
             }
         }
     }
-    return false;
+    false
 }
 
 pub struct Polygon {
@@ -198,14 +198,14 @@ impl Polygon {
         let mut i: usize = 0;
         for hole in self.holes.iter() {
             let tr = self.holes_rtree.get(i).unwrap();
-            if rings_contains_point_by_rtree_index(&hole, &tr, p, false) {
+            if rings_contains_point_by_rtree_index(hole, tr, p, false) {
                 contains = false;
                 break;
             }
 
             i += 1;
         }
-        return contains;
+        contains
     }
 
     /// Point-In-Polygon check, the normal way.
@@ -218,12 +218,12 @@ impl Polygon {
         }
         let mut contains: bool = true;
         for hole in self.holes.iter() {
-            if rings_contains_point(&hole, p, false) {
+            if rings_contains_point(hole, p, false) {
                 contains = false;
                 break;
             }
         }
-        return contains;
+        contains
     }
 
     /// Do point-in-polygon search.
@@ -234,7 +234,7 @@ impl Polygon {
         if self.with_index {
             return self.contains_point_with_index(p);
         }
-        return self.contains_point_normal(p);
+        self.contains_point_normal(p)
     }
 
     /// Create a new Polygon instance from exterior and holes.
@@ -289,7 +289,7 @@ impl Polygon {
     /// print!("{:?}\n", poly.contains_point(p_in));
     /// ```
     pub fn new(exterior: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
-        return Polygon::new_with_rtree_index_opt(exterior, holes, false);
+        Polygon::new_with_rtree_index_opt(exterior, holes, false)
     }
 
     pub fn new_with_rtree_index_opt(
@@ -334,7 +334,7 @@ impl Polygon {
                         [segrect.min.x, segrect.min.y],
                         [segrect.max.x, segrect.max.y],
                     ),
-                    i as i64,
+                    i,
                 );
             }
         }
@@ -344,14 +344,14 @@ impl Polygon {
             let mut hole_rtre = RTree::new();
             let n = (hole_poly.len() - 1) as i64;
             for i in 0..n {
-                let segrect = segment_at_for_vec_point(&hole_poly, i).rect();
+                let segrect = segment_at_for_vec_point(hole_poly, i).rect();
                 if with_index {
                     hole_rtre.insert(
                         RTreeRect::new(
                             [segrect.min.x, segrect.min.y],
                             [segrect.max.x, segrect.max.y],
                         ),
-                        i as i64,
+                        i,
                     );
                 }
             }
@@ -360,14 +360,14 @@ impl Polygon {
             }
         }
 
-        return Polygon {
+        Polygon {
             exterior,
             exterior_rtree,
             holes,
             holes_rtree,
             rect,
             with_index,
-        };
+        }
     }
 }
 
@@ -398,10 +398,10 @@ impl Segment {
             max_y = actual_max_y;
         }
 
-        return Rect {
+        Rect {
             min: Point { x: min_x, y: min_y },
             max: Point { x: max_x, y: max_y },
-        };
+        }
     }
 }
 
@@ -452,13 +452,11 @@ pub fn raycast(seg: &Segment, point: Point) -> RaycastResult {
                         on: true,
                     };
                 }
-            } else {
-                if p.x >= b.x && p.x <= a.x {
-                    return RaycastResult {
-                        inside: false,
-                        on: true,
-                    };
-                }
+            } else if p.x >= b.x && p.x <= a.x {
+                return RaycastResult {
+                    inside: false,
+                    on: true,
+                };
             }
         }
     }
@@ -472,13 +470,11 @@ pub fn raycast(seg: &Segment, point: Point) -> RaycastResult {
                     on: true,
                 };
             }
-        } else {
-            if p.y >= b.y && p.y <= a.y {
-                return RaycastResult {
-                    inside: false,
-                    on: true,
-                };
-            }
+        } else if p.y >= b.y && p.y <= a.y {
+            return RaycastResult {
+                inside: false,
+                on: true,
+            };
         }
     }
     if (p.x - a.x) / (b.x - a.x) == (p.y - a.y) / (b.y - a.y) {
@@ -502,13 +498,11 @@ pub fn raycast(seg: &Segment, point: Point) -> RaycastResult {
                 on: false,
             };
         }
-    } else {
-        if p.y < b.y || p.y > a.y {
-            return RaycastResult {
-                inside: false,
-                on: false,
-            };
-        }
+    } else if p.y < b.y || p.y > a.y {
+        return RaycastResult {
+            inside: false,
+            on: false,
+        };
     }
     if a.x > b.x {
         if p.x >= a.x {
@@ -544,16 +538,14 @@ pub fn raycast(seg: &Segment, point: Point) -> RaycastResult {
                 on: false,
             };
         }
-    } else {
-        if (p.y - b.y) / (p.x - b.x) >= (a.y - b.y) / (a.x - b.x) {
-            return RaycastResult {
-                inside: true,
-                on: false,
-            };
-        }
+    } else if (p.y - b.y) / (p.x - b.x) >= (a.y - b.y) / (a.x - b.x) {
+        return RaycastResult {
+            inside: true,
+            on: false,
+        };
     }
-    return RaycastResult {
+    RaycastResult {
         inside: false,
         on: false,
-    };
+    }
 }

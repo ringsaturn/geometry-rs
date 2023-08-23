@@ -194,12 +194,12 @@ impl Polygon {
             return false;
         }
 
-        let mut contains: bool = true;
+        let mut contains: bool = false;
         let mut i: usize = 0;
         for hole in self.holes.iter() {
             let tr = self.holes_rtree.get(i).unwrap();
             if rings_contains_point_by_rtree_index(&hole, &tr, p, false) {
-                contains = false;
+                contains = true;
                 break;
             }
 

@@ -79,23 +79,18 @@ mod benches_point_in_polygon {
         poly
     }
 
-    #[test]
-    fn test_in_out_polygon() {
-        let poly = load_poly(load_az_file(), false);
-        let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
-        assert_eq!(poly.contains_point(p_in), true);
-
-        let p_out = geometry_rs::Point {
-            x: -114.477539062,
-            y: 33.99802726,
-        };
-        assert_eq!(poly.contains_point(p_out), false);
-    }
 
     #[bench]
     fn poly_contain_point_for_az(b: &mut Bencher) {
         let poly = load_poly(load_az_file(), false);
+
         let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
+        let p_out = geometry_rs::Point {x: -114.4775, y: 33.9980};
+
+        assert_eq!(poly.contains_point(p_in), true);
+        assert_eq!(poly.contains_point(p_out), false);
+
+
         b.iter(|| {
             let _ = poly.contains_point(p_in);
         });
@@ -104,7 +99,12 @@ mod benches_point_in_polygon {
     #[bench]
     fn georust_poly_contain_point_for_az(b: &mut Bencher) {
         let poly: geo::Polygon = load_georust_poly(load_az_file());
+
         let p_in: geo::Point = geo::Point::new(-112.0, 33.0);
+        let p_out: geo::Point = geo::Point::new(-114.4775, 33.9980);
+
+        assert_eq!(poly.contains(&p_in), true);
+        assert_eq!(poly.contains(&p_out), false);
 
         b.iter(|| {
             let _ = poly.contains(&p_in);
@@ -115,6 +115,7 @@ mod benches_point_in_polygon {
     fn poly_contain_point_for_tx(b: &mut Bencher) {
         let poly = load_poly(load_tx_file(), false);
         let p_in = geometry_rs::Point { x: -99.5864, y: 29.0696 };
+        assert_eq!(poly.contains_point(p_in), true);
         b.iter(|| {
             let _ = poly.contains_point(p_in);
         });
@@ -124,6 +125,7 @@ mod benches_point_in_polygon {
     fn georust_poly_contain_point_for_tx(b: &mut Bencher) {
         let poly: geo::Polygon = load_georust_poly(load_tx_file());
         let p_in: geo::Point = geo::Point::new(-99.5864,29.0696);
+        assert_eq!(poly.contains(&p_in), true);
 
         b.iter(|| {
             let _ = poly.contains(&p_in);

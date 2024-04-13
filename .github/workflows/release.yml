@@ -18,9 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup | Rust
-        uses: ATiltedTree/setup-rust@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          rust-version: nightly
+          toolchain: nightly
       - name: Cache
         uses: Swatinem/rust-cache@v2
       - uses: katyo/publish-crates@v2

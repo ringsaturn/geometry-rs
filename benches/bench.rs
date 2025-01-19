@@ -28,7 +28,7 @@ mod benches_point_in_polygon {
         include_bytes!("./tx.geojson").to_vec()
     }
 
-    fn load_poly(data: Vec<u8>, rtree_index: bool) -> Polygon {
+    fn load_poly(data: Vec<u8>) -> Polygon {
         let geometry: Geometry = serde_json::from_slice(&data).unwrap();
 
         let mut exterior: Vec<Point> = vec![];
@@ -57,7 +57,7 @@ mod benches_point_in_polygon {
         }
 
         let geopoly =
-            geometry_rs::Polygon::new_with_rtree_index_opt(exterior, interior, rtree_index);
+            geometry_rs::Polygon::new(exterior, interior);
         return geopoly;
     }
 
@@ -79,17 +79,18 @@ mod benches_point_in_polygon {
         poly
     }
 
-
     #[bench]
     fn poly_contain_point_for_az(b: &mut Bencher) {
-        let poly = load_poly(load_az_file(), false);
+        let poly = load_poly(load_az_file());
 
         let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
-        let p_out = geometry_rs::Point {x: -114.4775, y: 33.9980};
+        let p_out = geometry_rs::Point {
+            x: -114.4775,
+            y: 33.9980,
+        };
 
         assert_eq!(poly.contains_point(p_in), true);
         assert_eq!(poly.contains_point(p_out), false);
-
 
         b.iter(|| {
             let _ = poly.contains_point(p_in);
@@ -113,8 +114,11 @@ mod benches_point_in_polygon {
 
     #[bench]
     fn poly_contain_point_for_tx(b: &mut Bencher) {
-        let poly = load_poly(load_tx_file(), false);
-        let p_in = geometry_rs::Point { x: -99.5864, y: 29.0696 };
+        let poly = load_poly(load_tx_file());
+        let p_in = geometry_rs::Point {
+            x: -99.5864,
+            y: 29.0696,
+        };
         assert_eq!(poly.contains_point(p_in), true);
         b.iter(|| {
             let _ = poly.contains_point(p_in);
@@ -124,12 +128,11 @@ mod benches_point_in_polygon {
     #[bench]
     fn georust_poly_contain_point_for_tx(b: &mut Bencher) {
         let poly: geo::Polygon = load_georust_poly(load_tx_file());
-        let p_in: geo::Point = geo::Point::new(-99.5864,29.0696);
+        let p_in: geo::Point = geo::Point::new(-99.5864, 29.0696);
         assert_eq!(poly.contains(&p_in), true);
 
         b.iter(|| {
             let _ = poly.contains(&p_in);
         });
     }
-
 }

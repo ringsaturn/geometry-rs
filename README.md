@@ -6,7 +6,3 @@ for [ringsaturn/tzf-rs](https://github.com/ringsaturn/tzf-rs).
 ```bash
 cargo add geometry-rs
 ```
-
-## TODO
-
-- [ ] Use compressed data of RTree index, since too many memory costs.

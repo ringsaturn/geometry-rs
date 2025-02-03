@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "geometry-rs"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "float_next_after",
  "geo",

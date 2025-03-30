@@ -10,8 +10,8 @@ pub struct Point {
 
 #[derive(Copy, Clone, Debug)]
 pub struct Rect {
-    min: Point,
-    max: Point,
+    pub min: Point,
+    pub max: Point,
 }
 
 impl Rect {
@@ -140,9 +140,9 @@ fn rings_contains_point(ring: &Vec<Point>, point: Point, allow_on_edge: bool) ->
 }
 
 pub struct Polygon {
-    exterior: Vec<Point>,
-    holes: Vec<Vec<Point>>,
-    rect: Rect,
+    pub exterior: Vec<Point>,
+    pub holes: Vec<Vec<Point>>,
+    pub rect: Rect,
 }
 
 impl Polygon {
@@ -261,8 +261,8 @@ impl Polygon {
 
 #[derive(Copy, Clone, Debug)]
 pub struct Segment {
-    a: Point,
-    b: Point,
+    pub a: Point,
+    pub b: Point,
 }
 
 impl Segment {

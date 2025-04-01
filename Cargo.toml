@@ -16,7 +16,7 @@ keywords = ["geometry"]
 float_next_after = "1.0.0"
 
 [dev-dependencies]
-geo = "0.29.3"
+geo = "0.30.0"
 serde = "1.0.217"
 serde_derive = "1.0.217"
 serde_json = "1.0.138"

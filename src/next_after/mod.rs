@@ -1,105 +1,63 @@
-#![no_std]
-
-/// Returns the next representable float value in the direction of y
+/// Returns the next representable float value in the direction of `y`.
 ///
-/// This function is strict and will step to the very next representable floating point,
-/// even if that value is subnormal.
+/// This implementation is adapted from the original `fna` crate. It preserves the
+/// numerical behaviour we rely on internally while keeping the logic private to
+/// `geometry-rs`.
 ///
 /// Base assumptions:
 ///
-/// self == y -> return y
-///
-/// self >= positive infinity -> return positive infinity
-///
-/// self <= negative infinity -> return negative infinity
-///
-/// self == NaN -> return NaN
-///
-/// self == -0.0 and y == 0.0 -> return positive 0.0
-///
-/// self == -0.0 and y == positive infinity -> 5e-324
+/// - `self == y` &rarr; return `y`
+/// - `self >= +∞` &rarr; return `+∞`
+/// - `self <= -∞` &rarr; return `-∞`
+/// - `self` or `y` is `NaN` &rarr; return `NaN`
+/// - `self == -0.0` and `y == 0.0` &rarr; return `+0.0`
+/// - `self == -0.0` and `y == +∞` &rarr; return the smallest positive subnormal
 ///
 /// # Examples
 ///
-/// ```
-/// use fna::NextAfter;
+/// ```ignore
+/// use geometry_rs::internal_usage_only::NextAfter;
 ///
-/// // Large numbers
-/// let big_num = 16237485966.00000437586943_f64;
-/// let next = big_num.next_after(std::f64::INFINITY);
-/// assert_eq!(next, 16237485966.000006_f64);
-///
-/// // Expected handling of 1.0
-/// let one = 1_f64;
+/// let one = 1.0_f64;
 /// let next = one.next_after(std::f64::INFINITY);
-/// assert_eq!(next, 1_f64 + std::f64::EPSILON);
-///
-/// // Tiny (negative) numbers
-/// let zero = 0_f32;
-/// let next = zero.next_after(std::f32::NEG_INFINITY);
-/// assert_eq!(next, -0.000000000000000000000000000000000000000000001_f32);
-///
-/// // Equal source/dest (even -0 == 0)
-/// let zero = 0_f64;
-/// let next = zero.next_after(-0_f64);
-/// assert_eq!(next, -0_f64);
+/// assert_eq!(next, 1.0_f64 + std::f64::EPSILON);
 /// ```
 ///
-/// # Safety
-///
-/// This trait uses the ToBits and FromBits functions from f32 and f64.
-/// Those both use unsafe { mem::transmute(self) } / unsafe { mem::transmute(v) }
-/// to convert a f32/f64 to u32/u64.  The docs for those functions claim they are safe
-/// and that "the safety issues with sNaN were overblown!"
-///
-pub trait NextAfter {
+/// This trait is crate-private and used to perform robust geometric calculations
+/// without leaking the implementation details to downstream users.
+pub(crate) trait NextAfter {
     #[must_use]
     fn next_after(self, y: Self) -> Self;
 }
 
 macro_rules! impl_next_after {
     ($float_type:ty, $module:ident, $minimum_non_zero:literal) => {
-        use super::NextAfter;
-
-        impl NextAfter for $float_type {
+        impl crate::next_after::NextAfter for $float_type {
             fn next_after(self, y: Self) -> Self {
-                // Check first if the input matches a fixed set of values
-                // that receive a pre-calculated response in line with the
-                // stated rules.
                 if let Some(out) = short_circuit_operands(self, y) {
                     return out;
                 }
 
-                // To get the next float, use trick fXX -> uXX +- 1 -> fXX
-                // increment or decrement depending on same sign.
                 let return_value = if (y > self) == (self > 0.0) {
                     <$float_type>::from_bits(self.to_bits() + 1)
                 } else {
                     <$float_type>::from_bits(self.to_bits() - 1)
                 };
 
-                // Note that following the IEEE standard both 0.0 and -0.0 are equal in rust
                 if return_value != 0.0 {
                     return return_value;
                 }
 
-                // At this point the return number must be zero
-                // so make sure it returns with the input's original sign.
                 copy_sign(return_value, self)
             }
         }
 
         #[inline]
         fn short_circuit_operands(x: $float_type, y: $float_type) -> Option<$float_type> {
-            // If x and y are equal (also -0.0 == 0.0 in the IEEE standard and rust),
-            // there is nothing further to do
             if y == x {
-                // The policy is to return y in cases of equality,
-                // this only matters when x = 0.0 and y = -0.0 (or the reverse)
                 return Some(y);
             }
 
-            // If x or y is NaN return NaN
             if x.is_nan() || y.is_nan() {
                 return Some(core::$module::NAN);
             }
@@ -108,9 +66,6 @@ macro_rules! impl_next_after {
                 return Some(x);
             }
 
-            // If x is (+/-)0 and y is not 0 (see first condition),
-            // return the hard coded value closest to zero and use
-            // positive/negative sign to move it in the proper direction
             if x == 0.0 {
                 return Some(copy_sign($minimum_non_zero, y));
             }
@@ -133,14 +88,14 @@ macro_rules! tests {
     ($float_type:ty, $module:ident, $smallest_pos:expr, $largest_neg:expr, $next_before_one:expr, $sequential_large_numbers:expr) => {
         #[cfg(test)]
         mod tests {
-            use super::{NextAfter, copy_sign};
+            use super::copy_sign;
+            use crate::next_after::NextAfter;
 
             const POS_INFINITY: $float_type = core::$module::INFINITY;
             const NEG_INFINITY: $float_type = core::$module::NEG_INFINITY;
             const POS_ZERO: $float_type = 0.0;
             const NEG_ZERO: $float_type = -0.0;
 
-            // Note: Not the same as fXX::MIN_POSITIVE, because that is only the min *normal* number.
             const SMALLEST_POS: $float_type = $smallest_pos;
             const LARGEST_NEG: $float_type = $largest_neg;
             const LARGEST_POS: $float_type = core::$module::MAX;
@@ -194,8 +149,6 @@ macro_rules! tests {
 
             #[test]
             fn step_towards_zero() {
-                // For steps towards zero, the sign of the zero reflects the direction
-                // from where zero was approached.
                 assert!(is_positive_zero(SMALLEST_POS.next_after(POS_ZERO)));
                 assert!(is_positive_zero(SMALLEST_POS.next_after(NEG_ZERO)));
                 assert!(is_positive_zero(SMALLEST_POS.next_after(NEG_INFINITY)));
@@ -206,9 +159,6 @@ macro_rules! tests {
 
             #[test]
             fn special_case_signed_zeros() {
-                // For a non-zero dest, stepping away from either POS_ZERO or NEG_ZERO
-                // has a non-zero result. Only if the destination itself points to the
-                // "other zero", the next_after call performs a zero sign switch.
                 assert!(is_negative_zero(POS_ZERO.next_after(NEG_ZERO)));
                 assert!(is_positive_zero(NEG_ZERO.next_after(POS_ZERO)));
             }
@@ -250,14 +200,12 @@ macro_rules! tests {
 
             #[test]
             fn jump_to_infinity() {
-                // Incrementing the max representable number has to go to infinity.
                 assert_eq!(LARGEST_POS.next_after(POS_INFINITY), POS_INFINITY);
                 assert_eq!(SMALLEST_NEG.next_after(NEG_INFINITY), NEG_INFINITY);
             }
 
             #[test]
             fn stays_at_infinity() {
-                // Once infinity is reached, there is not going back to normal numbers
                 assert_eq!(POS_INFINITY.next_after(NEG_INFINITY), POS_INFINITY);
                 assert_eq!(NEG_INFINITY.next_after(POS_INFINITY), NEG_INFINITY);
             }
@@ -315,7 +263,7 @@ macro_rules! tests {
     };
 }
 
-mod f64 {
+mod f64_impl {
     impl_next_after!(f64, f64, 5e-324);
 
     tests!(
@@ -328,7 +276,7 @@ mod f64 {
     );
 }
 
-mod f32 {
+mod f32_impl {
     impl_next_after!(f32, f32, 1e-45);
 
     tests!(

@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
-use fna::NextAfter;
+mod next_after;
+
+use crate::next_after::NextAfter;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Point {

@@ -1,0 +1,20 @@
+[package]
+name = "fna"
+version = "1.0.0"
+edition = "2024"
+description = "Returns the next representable float value in the direction of y"
+license = "MIT"
+homepage = "https://gitlab.com/bronsonbdevost/next_afterf"
+repository = "https://gitlab.com/bronsonbdevost/next_afterf"
+keywords = ["float", "f64", "f32", "nextafter", "increment"]
+categories = ["mathematics", "algorithms"]
+
+[dependencies]
+
+[[bench]]
+name = "bench"
+harness = false
+
+[dev-dependencies]
+criterion = { version = "0.7.0", features = ["html_reports"] }
+fastrand = "2.3.0"

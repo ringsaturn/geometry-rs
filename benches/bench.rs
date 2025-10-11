@@ -56,8 +56,7 @@ mod benches_point_in_polygon {
             }
         }
 
-        let geopoly =
-            geometry_rs::Polygon::new(exterior, interior);
+        let geopoly = geometry_rs::Polygon::new(exterior, interior);
         return geopoly;
     }
 

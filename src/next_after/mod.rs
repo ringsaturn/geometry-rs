@@ -1,8 +1,8 @@
 /// Returns the next representable float value in the direction of `y`.
 ///
-/// This implementation is adapted from the original `fna` crate. It preserves the
-/// numerical behaviour we rely on internally while keeping the logic private to
-/// `geometry-rs`.
+/// This implementation is adapted from the original `float-next-after` crate.
+/// It preserves the numerical behaviour we rely on internally while keeping the
+/// logic private to `geometry-rs`.
 ///
 /// Base assumptions:
 ///

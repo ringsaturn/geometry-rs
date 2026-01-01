@@ -15,7 +15,7 @@ keywords = ["geometry"]
 [dependencies]
 
 [dev-dependencies]
-geo = "0.31.0"
+geo = "0.32.0"
 serde = "1.0.228"
 serde_derive = "1.0.228"
-serde_json = "1.0.145"
+serde_json = "1.0.148"

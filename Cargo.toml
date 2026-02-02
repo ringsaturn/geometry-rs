@@ -18,4 +18,4 @@ keywords = ["geometry"]
 geo = "0.32.0"
 serde = "1.0.228"
 serde_derive = "1.0.228"
-serde_json = "1.0.148"
+serde_json = "1.0.149"

@@ -25,6 +25,7 @@ fn main() {
             },
         ],
         vec![],
+        None,
     );
 
     let p_out: geometry_rs::Point = geometry_rs::Point {

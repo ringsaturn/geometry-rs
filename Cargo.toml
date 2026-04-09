@@ -13,6 +13,7 @@ keywords = ["geometry"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+rtree_rs = "0.1.4"
 
 [dev-dependencies]
 geo = "0.32.0"

@@ -102,6 +102,7 @@ impl Rect {
 #[derive(Copy, Clone, Debug)]
 pub struct PolygonBuildOptions {
     pub enable_rtree: bool,
+    pub enable_compressed_quad: bool,
     pub rtree_min_segments: usize,
 }
 
@@ -109,6 +110,7 @@ impl Default for PolygonBuildOptions {
     fn default() -> Self {
         Self {
             enable_rtree: true,
+            enable_compressed_quad: true,
             rtree_min_segments: 64,
         }
     }
@@ -117,7 +119,188 @@ impl Default for PolygonBuildOptions {
 struct RingIndex {
     x_min: f64,
     x_max: f64,
-    tree: RTree<2, f64, usize>,
+    seg_count: usize,
+    rtree: Option<RTree<2, f64, usize>>,
+    compressed_quad: Option<CompressedQuadIndex>,
+}
+
+impl RingIndex {
+    fn search_candidates(&self, point_y: f64, out: &mut Vec<usize>) {
+        let query_rect = Rect {
+            min: Point {
+                x: self.x_min,
+                y: point_y,
+            },
+            max: Point {
+                x: self.x_max,
+                y: point_y,
+            },
+        };
+
+        let mut seen = vec![false; self.seg_count];
+
+        if let Some(tree) = self.rtree.as_ref() {
+            let query = RTreeRect::new([self.x_min, point_y], [self.x_max, point_y]);
+            for item in tree.search(query) {
+                let idx = *item.data;
+                if idx < self.seg_count && !seen[idx] {
+                    seen[idx] = true;
+                    out.push(idx);
+                }
+            }
+        }
+
+        if let Some(index) = self.compressed_quad.as_ref() {
+            let mut tmp = Vec::new();
+            index.search_intersects(query_rect, &mut tmp);
+            for idx in tmp {
+                if idx < self.seg_count && !seen[idx] {
+                    seen[idx] = true;
+                    out.push(idx);
+                }
+            }
+        }
+    }
+}
+
+const Q_MAX_ITEMS: usize = 12;
+const Q_MAX_DEPTH: usize = 64;
+
+#[derive(Default)]
+struct QuadNode {
+    split: bool,
+    items: Vec<usize>,
+    quads: [Option<Box<QuadNode>>; 4],
+}
+
+impl QuadNode {
+    fn new() -> Self {
+        Self {
+            split: false,
+            items: Vec::new(),
+            quads: [None, None, None, None],
+        }
+    }
+}
+
+struct CompressedQuadIndex {
+    bounds: Rect,
+    seg_rects: Vec<Rect>,
+    data: Vec<u8>,
+}
+
+impl CompressedQuadIndex {
+    fn build(ring: &[Point]) -> Option<Self> {
+        let seg_count = ring_segment_count(ring);
+        if seg_count == 0 {
+            return None;
+        }
+
+        let mut min_x = ring[0].x;
+        let mut min_y = ring[0].y;
+        let mut max_x = ring[0].x;
+        let mut max_y = ring[0].y;
+
+        for p in ring.iter().take(seg_count) {
+            if p.x < min_x {
+                min_x = p.x;
+            }
+            if p.y < min_y {
+                min_y = p.y;
+            }
+            if p.x > max_x {
+                max_x = p.x;
+            }
+            if p.y > max_y {
+                max_y = p.y;
+            }
+        }
+
+        let bounds = Rect {
+            min: Point { x: min_x, y: min_y },
+            max: Point { x: max_x, y: max_y },
+        };
+
+        let mut seg_rects = Vec::with_capacity(seg_count);
+        for i in 0..seg_count {
+            seg_rects.push(segment_at_for_slice(ring, i).rect());
+        }
+
+        let mut root = QuadNode::new();
+        for i in 0..seg_rects.len() {
+            insert_quad_node(&mut root, bounds, &seg_rects, i, 0);
+        }
+
+        let mut data = Vec::with_capacity(seg_rects.len() * 2);
+        compress_quad_node(&root, &mut data);
+
+        Some(Self {
+            bounds,
+            seg_rects,
+            data,
+        })
+    }
+
+    fn search_intersects(&self, query: Rect, out: &mut Vec<usize>) {
+        if !self.bounds.intersects_rect(query) {
+            return;
+        }
+        let _ = self.search_intersects_from(0, self.bounds, query, out);
+    }
+
+    fn search_intersects_from(
+        &self,
+        mut addr: usize,
+        bounds: Rect,
+        query: Rect,
+        out: &mut Vec<usize>,
+    ) -> Option<usize> {
+        let (nitems, next_addr) = read_uvarint(&self.data, addr)?;
+        addr = next_addr;
+
+        let mut last: usize = 0;
+        for _ in 0..nitems {
+            let (delta, next_addr) = read_uvarint(&self.data, addr)?;
+            addr = next_addr;
+            last = last.checked_add(delta as usize)?;
+            let seg_rect = self.seg_rects.get(last)?;
+            if seg_rect.intersects_rect(query) {
+                out.push(last);
+            }
+        }
+
+        let split = *self.data.get(addr)?;
+        addr += 1;
+        if split == 0 {
+            return Some(addr);
+        }
+        if split != 1 {
+            return None;
+        }
+
+        for q in 0..4 {
+            let (qsize, next_addr) = read_uvarint(&self.data, addr)?;
+            addr = next_addr;
+            if qsize == 0 {
+                continue;
+            }
+
+            let qsize = usize::try_from(qsize).ok()?;
+            let qbounds = quad_bounds(bounds, q);
+            let child_start = addr;
+            let child_end = child_start.checked_add(qsize)?;
+            if child_end > self.data.len() {
+                return None;
+            }
+
+            if qbounds.intersects_rect(query) {
+                let _ = self.search_intersects_from(child_start, qbounds, query, out)?;
+            }
+            addr = child_end;
+        }
+
+        Some(addr)
+    }
 }
 
 fn ring_segment_count(ring: &[Point]) -> usize {
@@ -132,7 +315,7 @@ fn segment_at_for_slice(ring: &[Point], index: usize) -> Segment {
 }
 
 fn build_ring_index(ring: &[Point], options: &PolygonBuildOptions) -> Option<RingIndex> {
-    if !options.enable_rtree {
+    if !options.enable_rtree && !options.enable_compressed_quad {
         return None;
     }
     if ring.is_empty() {
@@ -155,19 +338,40 @@ fn build_ring_index(ring: &[Point], options: &PolygonBuildOptions) -> Option<Rin
         }
     }
 
-    let mut tree: RTree<2, f64, usize> = RTree::new();
-    for i in 0..seg_count {
-        let seg_rect = segment_at_for_slice(ring, i).rect();
-        tree.insert(
-            RTreeRect::new(
-                [seg_rect.min.x, seg_rect.min.y],
-                [seg_rect.max.x, seg_rect.max.y],
-            ),
-            i,
-        );
+    let rtree = if options.enable_rtree {
+        let mut tree: RTree<2, f64, usize> = RTree::new();
+        for i in 0..seg_count {
+            let seg_rect = segment_at_for_slice(ring, i).rect();
+            tree.insert(
+                RTreeRect::new(
+                    [seg_rect.min.x, seg_rect.min.y],
+                    [seg_rect.max.x, seg_rect.max.y],
+                ),
+                i,
+            );
+        }
+        Some(tree)
+    } else {
+        None
+    };
+
+    let compressed_quad = if options.enable_compressed_quad {
+        CompressedQuadIndex::build(ring)
+    } else {
+        None
+    };
+
+    if rtree.is_none() && compressed_quad.is_none() {
+        return None;
     }
 
-    Some(RingIndex { x_min, x_max, tree })
+    Some(RingIndex {
+        x_min,
+        x_max,
+        seg_count,
+        rtree,
+        compressed_quad,
+    })
 }
 
 fn rings_contains_point(
@@ -179,9 +383,10 @@ fn rings_contains_point(
     let mut inside: bool = false;
 
     if let Some(index) = ring_index {
-        let query = RTreeRect::new([index.x_min, point.y], [index.x_max, point.y]);
-        for item in index.tree.search(query) {
-            let seg = segment_at_for_slice(ring, *item.data);
+        let mut candidates = Vec::new();
+        index.search_candidates(point.y, &mut candidates);
+        for i in candidates {
+            let seg = segment_at_for_slice(ring, i);
             let res: RaycastResult = raycast(&seg, point);
             if res.on {
                 inside = allow_on_edge;
@@ -224,6 +429,168 @@ fn rings_contains_point(
     }
 
     return inside;
+}
+
+fn choose_quad(bounds: Rect, rect: Rect) -> Option<usize> {
+    let mid_x = (bounds.min.x + bounds.max.x) / 2.0;
+    let mid_y = (bounds.min.y + bounds.max.y) / 2.0;
+
+    if rect.max.x < mid_x {
+        if rect.max.y < mid_y {
+            return Some(2);
+        }
+        if rect.min.y < mid_y {
+            return None;
+        }
+        return Some(0);
+    }
+
+    if rect.min.x < mid_x {
+        return None;
+    }
+
+    if rect.max.y < mid_y {
+        return Some(3);
+    }
+    if rect.min.y < mid_y {
+        return None;
+    }
+    Some(1)
+}
+
+fn quad_bounds(mut bounds: Rect, q: usize) -> Rect {
+    let center_x = (bounds.min.x + bounds.max.x) / 2.0;
+    let center_y = (bounds.min.y + bounds.max.y) / 2.0;
+
+    match q {
+        0 => {
+            bounds.min.y = center_y;
+            bounds.max.x = center_x;
+        }
+        1 => {
+            bounds.min.x = center_x;
+            bounds.min.y = center_y;
+        }
+        2 => {
+            bounds.max.x = center_x;
+            bounds.max.y = center_y;
+        }
+        3 => {
+            bounds.min.x = center_x;
+            bounds.max.y = center_y;
+        }
+        _ => {}
+    }
+    bounds
+}
+
+fn insert_quad_node(
+    node: &mut QuadNode,
+    bounds: Rect,
+    seg_rects: &[Rect],
+    item: usize,
+    depth: usize,
+) {
+    if depth == Q_MAX_DEPTH {
+        node.items.push(item);
+        return;
+    }
+
+    let item_rect = seg_rects[item];
+    if node.split {
+        if let Some(q) = choose_quad(bounds, item_rect) {
+            let qbounds = quad_bounds(bounds, q);
+            if node.quads[q].is_none() {
+                node.quads[q] = Some(Box::new(QuadNode::new()));
+            }
+            if let Some(quad) = node.quads[q].as_deref_mut() {
+                insert_quad_node(quad, qbounds, seg_rects, item, depth + 1);
+            }
+        } else {
+            node.items.push(item);
+        }
+        return;
+    }
+
+    if node.items.len() == Q_MAX_ITEMS {
+        let existing = std::mem::take(&mut node.items);
+        node.split = true;
+        for i in existing {
+            let rect = seg_rects[i];
+            if let Some(q) = choose_quad(bounds, rect) {
+                let qbounds = quad_bounds(bounds, q);
+                if node.quads[q].is_none() {
+                    node.quads[q] = Some(Box::new(QuadNode::new()));
+                }
+                if let Some(quad) = node.quads[q].as_deref_mut() {
+                    insert_quad_node(quad, qbounds, seg_rects, i, depth + 1);
+                }
+            } else {
+                node.items.push(i);
+            }
+        }
+        insert_quad_node(node, bounds, seg_rects, item, depth);
+        return;
+    }
+
+    node.items.push(item);
+}
+
+fn append_uvarint(dst: &mut Vec<u8>, mut x: u64) {
+    while x >= 0x80 {
+        dst.push((x as u8 & 0x7f) | 0x80);
+        x >>= 7;
+    }
+    dst.push(x as u8);
+}
+
+fn read_uvarint(data: &[u8], mut addr: usize) -> Option<(u64, usize)> {
+    let mut x: u64 = 0;
+    let mut shift = 0;
+
+    loop {
+        let b = *data.get(addr)?;
+        addr += 1;
+
+        if shift == 70 {
+            return None;
+        }
+
+        x |= ((b & 0x7f) as u64) << shift;
+        if b < 0x80 {
+            return Some((x, addr));
+        }
+        shift += 7;
+    }
+}
+
+fn compress_quad_node(node: &QuadNode, dst: &mut Vec<u8>) {
+    let mut items = node.items.clone();
+    items.sort_unstable();
+
+    append_uvarint(dst, items.len() as u64);
+    let mut last = 0usize;
+    for item in items {
+        append_uvarint(dst, (item - last) as u64);
+        last = item;
+    }
+
+    if !node.split {
+        dst.push(0);
+        return;
+    }
+
+    dst.push(1);
+    for q in 0..4 {
+        if let Some(child) = node.quads[q].as_deref() {
+            let mut child_bytes = Vec::new();
+            compress_quad_node(child, &mut child_bytes);
+            append_uvarint(dst, child_bytes.len() as u64);
+            dst.extend_from_slice(&child_bytes);
+        } else {
+            append_uvarint(dst, 0);
+        }
+    }
 }
 
 pub struct Polygon {
@@ -604,6 +971,24 @@ mod tests {
         ring
     }
 
+    fn scan_candidates(ring: &[Point], y: f64, x_min: f64, x_max: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        let query = Rect {
+            min: Point { x: x_min, y },
+            max: Point { x: x_max, y },
+        };
+        for (i, pair) in ring.windows(2).enumerate() {
+            let seg = Segment {
+                a: pair[0],
+                b: pair[1],
+            };
+            if seg.rect().intersects_rect(query) {
+                out.push(i);
+            }
+        }
+        out
+    }
+
     #[test]
     fn rings_contains_point_allow_on_edge() {
         let ring = square(0.0, 10.0);
@@ -637,6 +1022,7 @@ mod tests {
             vec![],
             Some(PolygonBuildOptions {
                 enable_rtree: false,
+                enable_compressed_quad: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -646,12 +1032,67 @@ mod tests {
             vec![],
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: true,
                 rtree_min_segments: 64,
             }),
         );
 
         assert_eq!(p1.contains_point(p_in), p2.contains_point(p_in));
         assert_eq!(p1.contains_point(p_out), p2.contains_point(p_out));
+    }
+
+    #[test]
+    fn rtree_and_compressed_quad_and_both_match_baseline() {
+        let ring = polygon_with_segments(160);
+        let points = [
+            Point { x: 0.2, y: 0.1 },
+            Point { x: -0.4, y: -0.3 },
+            Point { x: 1.2, y: 0.0 },
+        ];
+
+        let base = Polygon::new(
+            ring.clone(),
+            vec![],
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: false,
+                rtree_min_segments: 64,
+            }),
+        );
+        let only_rtree = Polygon::new(
+            ring.clone(),
+            vec![],
+            Some(PolygonBuildOptions {
+                enable_rtree: true,
+                enable_compressed_quad: false,
+                rtree_min_segments: 64,
+            }),
+        );
+        let only_compressed = Polygon::new(
+            ring.clone(),
+            vec![],
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: true,
+                rtree_min_segments: 64,
+            }),
+        );
+        let both = Polygon::new(
+            ring,
+            vec![],
+            Some(PolygonBuildOptions {
+                enable_rtree: true,
+                enable_compressed_quad: true,
+                rtree_min_segments: 64,
+            }),
+        );
+
+        for p in points {
+            let expected = base.contains_point(p);
+            assert_eq!(only_rtree.contains_point(p), expected);
+            assert_eq!(only_compressed.contains_point(p), expected);
+            assert_eq!(both.contains_point(p), expected);
+        }
     }
 
     #[test]
@@ -665,6 +1106,7 @@ mod tests {
             vec![],
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: true,
                 rtree_min_segments: 63,
             }),
         );
@@ -673,6 +1115,7 @@ mod tests {
             vec![],
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: true,
                 rtree_min_segments: 64,
             }),
         );
@@ -681,6 +1124,7 @@ mod tests {
             vec![],
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: true,
                 rtree_min_segments: 65,
             }),
         );
@@ -706,9 +1150,32 @@ mod tests {
 
         poly.set_options(PolygonBuildOptions {
             enable_rtree: false,
+            enable_compressed_quad: false,
             rtree_min_segments: 64,
         });
         assert!(!poly.contains_point(Point { x: 23.0, y: 23.0 }));
         assert!(poly.contains_point(Point { x: 25.0, y: 25.0 }));
+    }
+
+    #[test]
+    fn compressed_quad_candidates_match_scan() {
+        let ring = polygon_with_segments(256);
+        let options = PolygonBuildOptions {
+            enable_rtree: false,
+            enable_compressed_quad: true,
+            rtree_min_segments: 64,
+        };
+        let index = build_ring_index(&ring, &options).unwrap();
+
+        for y in [-1.2, -1.0, -0.75, -0.2, 0.0, 0.4, 0.99, 1.0, 1.2] {
+            let mut from_index = Vec::new();
+            index.search_candidates(y, &mut from_index);
+            from_index.sort_unstable();
+
+            let mut from_scan = scan_candidates(&ring, y, index.x_min, index.x_max);
+            from_scan.sort_unstable();
+
+            assert_eq!(from_index, from_scan);
+        }
     }
 }

@@ -84,6 +84,7 @@ mod benches_point_in_polygon {
             load_az_file(),
             Some(PolygonBuildOptions {
                 enable_rtree: false,
+                enable_compressed_quad: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -108,6 +109,7 @@ mod benches_point_in_polygon {
             load_az_file(),
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: true,
                 rtree_min_segments: 64,
             }),
         );
@@ -147,6 +149,7 @@ mod benches_point_in_polygon {
             load_tx_file(),
             Some(PolygonBuildOptions {
                 enable_rtree: false,
+                enable_compressed_quad: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -166,6 +169,7 @@ mod benches_point_in_polygon {
             load_tx_file(),
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: true,
                 rtree_min_segments: 64,
             }),
         );

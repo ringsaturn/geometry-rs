@@ -8,6 +8,10 @@ on:
     types:
       - published
 
+permissions:
+  contents: read
+  id-token: write
+      
 env:
   CARGO_TERM_COLOR: always
 
@@ -15,11 +19,23 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     if: github.event_name == 'release' && github.event.action == 'published'
+    environment:
+      name: publish
+      url: https://crates.io/crates/geometry-rs
     steps:
       - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Verify tag matches Cargo version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(cargo pkgid | sed -E 's/.*#//')"
+
+          if [ "${tag_version}" != "${cargo_version}" ]; then
+            echo "Tag version ${tag_version} does not match Cargo.toml version ${cargo_version}."
+            exit 1
+          fi
 
       - name: Authenticate with crates.io
         id: auth

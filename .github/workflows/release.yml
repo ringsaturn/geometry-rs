@@ -3,10 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "*.*.*"
-  release:
-    types:
-      - published
+      - "v*"
 
 permissions:
   contents: read

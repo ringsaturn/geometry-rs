@@ -4,7 +4,7 @@
 mod benches_point_in_polygon {
     extern crate test;
     use geo::Contains;
-    use geometry_rs::{Point, Polygon};
+    use geometry_rs::{Point, Polygon, PolygonBuildOptions};
     use serde_derive::Deserialize;
     use serde_derive::Serialize;
     use std::str;
@@ -28,7 +28,7 @@ mod benches_point_in_polygon {
         include_bytes!("./tx.geojson").to_vec()
     }
 
-    fn load_poly(data: Vec<u8>) -> Polygon {
+    fn load_poly(data: Vec<u8>, options: Option<PolygonBuildOptions>) -> Polygon {
         let geometry: Geometry = serde_json::from_slice(&data).unwrap();
 
         let mut exterior: Vec<Point> = vec![];
@@ -56,7 +56,7 @@ mod benches_point_in_polygon {
             }
         }
 
-        let geopoly = geometry_rs::Polygon::new(exterior, interior);
+        let geopoly = geometry_rs::Polygon::new(exterior, interior, options);
         return geopoly;
     }
 
@@ -80,7 +80,39 @@ mod benches_point_in_polygon {
 
     #[bench]
     fn poly_contain_point_for_az(b: &mut Bencher) {
-        let poly = load_poly(load_az_file());
+        let poly = load_poly(
+            load_az_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: false,
+                rtree_min_segments: 64,
+            }),
+        );
+
+        let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
+        let p_out = geometry_rs::Point {
+            x: -114.4775,
+            y: 33.9980,
+        };
+
+        assert_eq!(poly.contains_point(p_in), true);
+        assert_eq!(poly.contains_point(p_out), false);
+
+        b.iter(|| {
+            let _ = poly.contains_point(p_in);
+        });
+    }
+
+    #[bench]
+    fn poly_contain_point_for_az_indexed(b: &mut Bencher) {
+        let poly = load_poly(
+            load_az_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: true,
+                enable_compressed_quad: true,
+                rtree_min_segments: 64,
+            }),
+        );
 
         let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
         let p_out = geometry_rs::Point {
@@ -113,7 +145,34 @@ mod benches_point_in_polygon {
 
     #[bench]
     fn poly_contain_point_for_tx(b: &mut Bencher) {
-        let poly = load_poly(load_tx_file());
+        let poly = load_poly(
+            load_tx_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: false,
+                rtree_min_segments: 64,
+            }),
+        );
+        let p_in = geometry_rs::Point {
+            x: -99.5864,
+            y: 29.0696,
+        };
+        assert_eq!(poly.contains_point(p_in), true);
+        b.iter(|| {
+            let _ = poly.contains_point(p_in);
+        });
+    }
+
+    #[bench]
+    fn poly_contain_point_for_tx_indexed(b: &mut Bencher) {
+        let poly = load_poly(
+            load_tx_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: true,
+                enable_compressed_quad: true,
+                rtree_min_segments: 64,
+            }),
+        );
         let p_in = geometry_rs::Point {
             x: -99.5864,
             y: 29.0696,

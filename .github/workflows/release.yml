@@ -18,7 +18,7 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' && github.event.action == 'published'
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     environment:
       name: publish
       url: https://crates.io/crates/geometry-rs

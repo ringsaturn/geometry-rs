@@ -110,7 +110,7 @@ pub struct PolygonBuildOptions {
 impl Default for PolygonBuildOptions {
     fn default() -> Self {
         Self {
-            enable_rtree: true,
+            enable_rtree: false,
             enable_compressed_quad: true,
             enable_y_stripes: false,
             rtree_min_segments: 64,

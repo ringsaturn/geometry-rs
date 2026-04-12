@@ -119,40 +119,6 @@ impl Default for PolygonBuildOptions {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CompressedQuadBuildStats {
-    pub segment_count: usize,
-    pub node_count: usize,
-    pub split_node_count: usize,
-    pub split_resident_item_count: usize,
-    pub max_depth: usize,
-    pub depth_limited_item_count: usize,
-    pub compressed_bytes: usize,
-}
-
-impl CompressedQuadBuildStats {
-    pub fn split_resident_ratio(&self) -> f64 {
-        if self.segment_count == 0 {
-            return 0.0;
-        }
-        self.split_resident_item_count as f64 / self.segment_count as f64
-    }
-
-    pub fn merge(&mut self, other: &Self) {
-        self.segment_count += other.segment_count;
-        self.node_count += other.node_count;
-        self.split_node_count += other.split_node_count;
-        self.split_resident_item_count += other.split_resident_item_count;
-        self.max_depth = self.max_depth.max(other.max_depth);
-        self.depth_limited_item_count += other.depth_limited_item_count;
-        self.compressed_bytes += other.compressed_bytes;
-    }
-
-    fn observe_depth(&mut self, depth: usize) {
-        self.max_depth = self.max_depth.max(depth);
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct YStripesBuildStats {
     pub segment_count: usize,
     pub stripe_count: usize,
@@ -167,7 +133,6 @@ pub struct RingBuildStats {
     pub used_rtree: bool,
     pub used_compressed_quad: bool,
     pub used_y_stripes: bool,
-    pub compressed_quad: Option<CompressedQuadBuildStats>,
     pub y_stripes: Option<YStripesBuildStats>,
 }
 
@@ -420,17 +385,11 @@ struct CompressedQuadIndex {
 }
 
 impl CompressedQuadIndex {
-    fn build(ring: &[Point]) -> Option<(Self, CompressedQuadBuildStats)> {
+    fn build(ring: &[Point]) -> Option<Self> {
         let seg_count = ring_segment_count(ring);
         if seg_count == 0 {
             return None;
         }
-
-        let mut stats = CompressedQuadBuildStats {
-            segment_count: seg_count,
-            node_count: 1,
-            ..CompressedQuadBuildStats::default()
-        };
 
         let mut min_x = ring[0].x;
         let mut min_y = ring[0].y;
@@ -464,21 +423,17 @@ impl CompressedQuadIndex {
 
         let mut root = QuadNode::new();
         for i in 0..seg_rects.len() {
-            insert_quad_node(&mut root, bounds, &seg_rects, i, 0, &mut stats);
+            insert_quad_node(&mut root, bounds, &seg_rects, i, 0);
         }
 
         let mut data = Vec::with_capacity(seg_rects.len() * 2);
         compress_quad_node(&root, &mut data);
-        stats.compressed_bytes = data.len();
 
-        Some((
-            Self {
-                bounds,
-                seg_rects,
-                data,
-            },
-            stats,
-        ))
+        Some(Self {
+            bounds,
+            seg_rects,
+            data,
+        })
     }
 
     fn search_intersects(&self, query: Rect, out: &mut Vec<usize>) {
@@ -600,18 +555,17 @@ fn build_ring_index(
         None
     };
 
-    let (compressed_quad, compressed_quad_stats) = if options.enable_compressed_quad {
+    let compressed_quad = if options.enable_compressed_quad {
         match CompressedQuadIndex::build(ring) {
-            Some((index, quad_stats)) => {
+            Some(index) => {
                 stats.used_compressed_quad = true;
-                (Some(index), Some(quad_stats))
+                Some(index)
             }
-            None => (None, None),
+            None => None,
         }
     } else {
-        (None, None)
+        None
     };
-    stats.compressed_quad = compressed_quad_stats;
 
     let (y_stripes, y_stripes_stats) = if options.enable_y_stripes {
         let mut seg_rects = Vec::with_capacity(seg_count);
@@ -763,10 +717,8 @@ fn insert_quad_node(
     seg_rects: &[Rect],
     item: usize,
     depth: usize,
-    stats: &mut CompressedQuadBuildStats,
 ) {
     if depth == Q_MAX_DEPTH {
-        stats.depth_limited_item_count += 1;
         node.items.push(item);
         return;
     }
@@ -777,14 +729,11 @@ fn insert_quad_node(
             let qbounds = quad_bounds(bounds, q);
             if node.quads[q].is_none() {
                 node.quads[q] = Some(Box::new(QuadNode::new()));
-                stats.node_count += 1;
-                stats.observe_depth(depth + 1);
             }
             if let Some(quad) = node.quads[q].as_deref_mut() {
-                insert_quad_node(quad, qbounds, seg_rects, item, depth + 1, stats);
+                insert_quad_node(quad, qbounds, seg_rects, item, depth + 1);
             }
         } else {
-            stats.split_resident_item_count += 1;
             node.items.push(item);
         }
         return;
@@ -793,25 +742,21 @@ fn insert_quad_node(
     if node.items.len() == Q_MAX_ITEMS {
         let existing = std::mem::take(&mut node.items);
         node.split = true;
-        stats.split_node_count += 1;
         for i in existing {
             let rect = seg_rects[i];
             if let Some(q) = choose_quad(bounds, rect) {
                 let qbounds = quad_bounds(bounds, q);
                 if node.quads[q].is_none() {
                     node.quads[q] = Some(Box::new(QuadNode::new()));
-                    stats.node_count += 1;
-                    stats.observe_depth(depth + 1);
                 }
                 if let Some(quad) = node.quads[q].as_deref_mut() {
-                    insert_quad_node(quad, qbounds, seg_rects, i, depth + 1, stats);
+                    insert_quad_node(quad, qbounds, seg_rects, i, depth + 1);
                 }
             } else {
-                stats.split_resident_item_count += 1;
                 node.items.push(i);
             }
         }
-        insert_quad_node(node, bounds, seg_rects, item, depth, stats);
+        insert_quad_node(node, bounds, seg_rects, item, depth);
         return;
     }
 
@@ -1475,10 +1420,6 @@ mod tests {
 
         assert!(stats.used_compressed_quad);
         assert!(!stats.below_threshold);
-        let quad_stats = stats.compressed_quad.as_ref().unwrap();
-        assert_eq!(quad_stats.segment_count, 256);
-        assert!(quad_stats.node_count > 0);
-        assert!(quad_stats.compressed_bytes > 0);
 
         for y in [-1.2, -1.0, -0.75, -0.2, 0.0, 0.4, 0.99, 1.0, 1.2] {
             let mut from_index = Vec::new();
@@ -1525,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    fn polygon_index_stats_capture_threshold_and_quad_metrics() {
+    fn polygon_index_stats_capture_threshold_for_compressed_quad() {
         let indexed = Polygon::new(
             polygon_with_segments(256),
             vec![polygon_with_segments(32)],
@@ -1540,11 +1481,9 @@ mod tests {
         assert!(stats.exterior.used_compressed_quad);
         assert!(!stats.exterior.below_threshold);
         assert_eq!(stats.exterior.segment_count, 256);
-        assert!(stats.exterior.compressed_quad.is_some());
         assert_eq!(stats.holes.len(), 1);
         assert!(stats.holes[0].below_threshold);
         assert!(!stats.holes[0].used_compressed_quad);
-        assert!(stats.holes[0].compressed_quad.is_none());
     }
 
     #[test]

@@ -105,13 +105,65 @@ mod benches_point_in_polygon {
     }
 
     #[bench]
-    fn poly_contain_point_for_az_indexed(b: &mut Bencher) {
+    fn poly_contain_point_for_az_rtree_only(b: &mut Bencher) {
         let poly = load_poly(
             load_az_file(),
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: false,
+                enable_y_stripes: false,
+                rtree_min_segments: 64,
+            }),
+        );
+
+        let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
+        let p_out = geometry_rs::Point {
+            x: -114.4775,
+            y: 33.9980,
+        };
+
+        assert_eq!(poly.contains_point(p_in), true);
+        assert_eq!(poly.contains_point(p_out), false);
+
+        b.iter(|| {
+            let _ = poly.contains_point(p_in);
+        });
+    }
+
+    #[bench]
+    fn poly_contain_point_for_az_quad_only(b: &mut Bencher) {
+        let poly = load_poly(
+            load_az_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
                 enable_compressed_quad: true,
                 enable_y_stripes: false,
+                rtree_min_segments: 64,
+            }),
+        );
+
+        let p_in = geometry_rs::Point { x: -112.0, y: 33.0 };
+        let p_out = geometry_rs::Point {
+            x: -114.4775,
+            y: 33.9980,
+        };
+
+        assert_eq!(poly.contains_point(p_in), true);
+        assert_eq!(poly.contains_point(p_out), false);
+
+        b.iter(|| {
+            let _ = poly.contains_point(p_in);
+        });
+    }
+
+    #[bench]
+    fn poly_contain_point_for_az_y_stripes_only(b: &mut Bencher) {
+        let poly = load_poly(
+            load_az_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: false,
+                enable_y_stripes: true,
                 rtree_min_segments: 64,
             }),
         );
@@ -167,13 +219,55 @@ mod benches_point_in_polygon {
     }
 
     #[bench]
-    fn poly_contain_point_for_tx_indexed(b: &mut Bencher) {
+    fn poly_contain_point_for_tx_rtree_only(b: &mut Bencher) {
         let poly = load_poly(
             load_tx_file(),
             Some(PolygonBuildOptions {
                 enable_rtree: true,
+                enable_compressed_quad: false,
+                enable_y_stripes: false,
+                rtree_min_segments: 64,
+            }),
+        );
+        let p_in = geometry_rs::Point {
+            x: -99.5864,
+            y: 29.0696,
+        };
+        assert_eq!(poly.contains_point(p_in), true);
+        b.iter(|| {
+            let _ = poly.contains_point(p_in);
+        });
+    }
+
+    #[bench]
+    fn poly_contain_point_for_tx_quad_only(b: &mut Bencher) {
+        let poly = load_poly(
+            load_tx_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
                 enable_compressed_quad: true,
                 enable_y_stripes: false,
+                rtree_min_segments: 64,
+            }),
+        );
+        let p_in = geometry_rs::Point {
+            x: -99.5864,
+            y: 29.0696,
+        };
+        assert_eq!(poly.contains_point(p_in), true);
+        b.iter(|| {
+            let _ = poly.contains_point(p_in);
+        });
+    }
+
+    #[bench]
+    fn poly_contain_point_for_tx_y_stripes_only(b: &mut Bencher) {
+        let poly = load_poly(
+            load_tx_file(),
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: false,
+                enable_y_stripes: true,
                 rtree_min_segments: 64,
             }),
         );

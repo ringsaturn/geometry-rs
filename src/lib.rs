@@ -103,17 +103,43 @@ impl Rect {
 pub struct PolygonBuildOptions {
     pub enable_rtree: bool,
     pub enable_compressed_quad: bool,
+    pub enable_y_stripes: bool,
     pub rtree_min_segments: usize,
 }
 
 impl Default for PolygonBuildOptions {
     fn default() -> Self {
         Self {
-            enable_rtree: true,
+            enable_rtree: false,
             enable_compressed_quad: true,
+            enable_y_stripes: false,
             rtree_min_segments: 64,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct YStripesBuildStats {
+    pub segment_count: usize,
+    pub stripe_count: usize,
+    pub assigned_item_count: usize,
+    pub max_bucket_len: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RingBuildStats {
+    pub segment_count: usize,
+    pub below_threshold: bool,
+    pub used_rtree: bool,
+    pub used_compressed_quad: bool,
+    pub used_y_stripes: bool,
+    pub y_stripes: Option<YStripesBuildStats>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PolygonIndexStats {
+    pub exterior: RingBuildStats,
+    pub holes: Vec<RingBuildStats>,
 }
 
 struct RingIndex {
@@ -122,6 +148,7 @@ struct RingIndex {
     seg_count: usize,
     rtree: Option<RTree<2, f64, usize>>,
     compressed_quad: Option<CompressedQuadIndex>,
+    y_stripes: Option<YStripesIndex>,
 }
 
 impl RingIndex {
@@ -150,6 +177,17 @@ impl RingIndex {
             }
         }
 
+        if let Some(index) = self.y_stripes.as_ref() {
+            let mut tmp = Vec::new();
+            index.search(point_y, &mut tmp);
+            for idx in tmp {
+                if idx < self.seg_count && !seen[idx] {
+                    seen[idx] = true;
+                    out.push(idx);
+                }
+            }
+        }
+
         if let Some(index) = self.compressed_quad.as_ref() {
             let mut tmp = Vec::new();
             index.search_intersects(query_rect, &mut tmp);
@@ -161,6 +199,163 @@ impl RingIndex {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct YStripe {
+    start: usize,
+    count: usize,
+}
+
+struct YStripesIndex {
+    min_y: f64,
+    height: f64,
+    stripes: Vec<YStripe>,
+    indexes: Vec<usize>,
+    y_ranges: Vec<(f64, f64)>,
+}
+
+impl YStripesIndex {
+    fn build(ring: &[Point], seg_rects: &[Rect]) -> Option<(Self, YStripesBuildStats)> {
+        if seg_rects.is_empty() {
+            return None;
+        }
+
+        let mut min_y = seg_rects[0].min.y;
+        let mut max_y = seg_rects[0].max.y;
+        for rect in seg_rects.iter().copied() {
+            min_y = min_y.min(rect.min.y);
+            max_y = max_y.max(rect.max.y);
+        }
+
+        let mut stripe_count = calc_y_stripe_count(ring, seg_rects.len());
+        if stripe_count == 0 {
+            stripe_count = 1;
+        }
+
+        let height = max_y - min_y;
+        let mut counts = vec![0usize; stripe_count];
+        for rect in seg_rects.iter().copied() {
+            let (start, end) = stripe_bounds_for_rect(rect, min_y, height, stripe_count);
+            for stripe in start..=end {
+                counts[stripe] += 1;
+            }
+        }
+
+        let mut stripes = vec![YStripe::default(); stripe_count];
+        let mut offset = 0usize;
+        for (stripe, count) in stripes.iter_mut().zip(&counts) {
+            stripe.start = offset;
+            stripe.count = 0;
+            offset += *count;
+        }
+
+        let mut indexes = vec![0usize; offset];
+        for (idx, rect) in seg_rects.iter().copied().enumerate() {
+            let (start, end) = stripe_bounds_for_rect(rect, min_y, height, stripe_count);
+            for stripe_index in start..=end {
+                let stripe = &mut stripes[stripe_index];
+                indexes[stripe.start + stripe.count] = idx;
+                stripe.count += 1;
+            }
+        }
+
+        let mut stats = YStripesBuildStats {
+            segment_count: seg_rects.len(),
+            stripe_count,
+            assigned_item_count: indexes.len(),
+            max_bucket_len: counts.into_iter().max().unwrap_or(0),
+        };
+        if stats.stripe_count == 0 {
+            stats.stripe_count = 1;
+        }
+
+        let y_ranges = seg_rects
+            .iter()
+            .map(|rect| (rect.min.y, rect.max.y))
+            .collect::<Vec<_>>();
+
+        Some((
+            Self {
+                min_y,
+                height,
+                stripes,
+                indexes,
+                y_ranges,
+            },
+            stats,
+        ))
+    }
+
+    fn search(&self, y: f64, out: &mut Vec<usize>) {
+        if self.height == 0.0 {
+            if y != self.min_y {
+                return;
+            }
+        } else if y < self.min_y || y > self.min_y + self.height {
+            return;
+        }
+
+        let stripe_index = if self.height == 0.0 {
+            0
+        } else {
+            let raw = ((y - self.min_y) / self.height * self.stripes.len() as f64).floor() as isize;
+            raw.clamp(0, self.stripes.len() as isize - 1) as usize
+        };
+        let stripe = self.stripes[stripe_index];
+        let end = stripe.start + stripe.count;
+        for idx in &self.indexes[stripe.start..end] {
+            let (seg_min_y, seg_max_y) = self.y_ranges[*idx];
+            if y >= seg_min_y && y <= seg_max_y {
+                out.push(*idx);
+            }
+        }
+    }
+}
+
+fn stripe_bounds_for_rect(
+    rect: Rect,
+    min_y: f64,
+    height: f64,
+    stripe_count: usize,
+) -> (usize, usize) {
+    if stripe_count <= 1 || height == 0.0 {
+        return (0, 0);
+    }
+
+    let last = stripe_count - 1;
+    let start = (((rect.min.y - min_y) / height) * stripe_count as f64).floor() as isize;
+    let end = (((rect.max.y - min_y) / height) * stripe_count as f64).floor() as isize;
+    (
+        start.clamp(0, last as isize) as usize,
+        end.clamp(0, last as isize) as usize,
+    )
+}
+
+fn calc_ring_area_and_perimeter(ring: &[Point]) -> (f64, f64) {
+    let seg_count = ring_segment_count(ring);
+    if seg_count == 0 {
+        return (0.0, 0.0);
+    }
+
+    let mut signed_area = 0.0;
+    let mut perimeter = 0.0;
+    for i in 0..seg_count {
+        let a = ring[i];
+        let b = ring[i + 1];
+        signed_area += a.x * b.y - b.x * a.y;
+        perimeter += ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+    }
+    (signed_area.abs() * 0.5, perimeter)
+}
+
+fn calc_y_stripe_count(ring: &[Point], seg_count: usize) -> usize {
+    let (area, perimeter) = calc_ring_area_and_perimeter(ring);
+    let mut score = 0.0;
+    if perimeter > 0.0 {
+        score = (area * std::f64::consts::PI * 4.0) / (perimeter * perimeter);
+    }
+    ((seg_count as f64 * score).floor() as usize).max(32)
 }
 
 const Q_MAX_ITEMS: usize = 12;
@@ -314,17 +509,21 @@ fn segment_at_for_slice(ring: &[Point], index: usize) -> Segment {
     }
 }
 
-fn build_ring_index(ring: &[Point], options: &PolygonBuildOptions) -> Option<RingIndex> {
-    if !options.enable_rtree && !options.enable_compressed_quad {
-        return None;
-    }
-    if ring.is_empty() {
-        return None;
-    }
-
+fn build_ring_index(
+    ring: &[Point],
+    options: &PolygonBuildOptions,
+) -> (Option<RingIndex>, RingBuildStats) {
     let seg_count = ring_segment_count(ring);
-    if seg_count < options.rtree_min_segments {
-        return None;
+    let index_requested =
+        options.enable_rtree || options.enable_compressed_quad || options.enable_y_stripes;
+    let mut stats = RingBuildStats {
+        segment_count: seg_count,
+        below_threshold: index_requested && seg_count < options.rtree_min_segments,
+        ..RingBuildStats::default()
+    };
+
+    if !index_requested || ring.is_empty() || seg_count < options.rtree_min_segments {
+        return (None, stats);
     }
 
     let mut x_min = ring[0].x;
@@ -339,6 +538,7 @@ fn build_ring_index(ring: &[Point], options: &PolygonBuildOptions) -> Option<Rin
     }
 
     let rtree = if options.enable_rtree {
+        stats.used_rtree = true;
         let mut tree: RTree<2, f64, usize> = RTree::new();
         for i in 0..seg_count {
             let seg_rect = segment_at_for_slice(ring, i).rect();
@@ -356,22 +556,49 @@ fn build_ring_index(ring: &[Point], options: &PolygonBuildOptions) -> Option<Rin
     };
 
     let compressed_quad = if options.enable_compressed_quad {
-        CompressedQuadIndex::build(ring)
+        match CompressedQuadIndex::build(ring) {
+            Some(index) => {
+                stats.used_compressed_quad = true;
+                Some(index)
+            }
+            None => None,
+        }
     } else {
         None
     };
 
-    if rtree.is_none() && compressed_quad.is_none() {
-        return None;
+    let (y_stripes, y_stripes_stats) = if options.enable_y_stripes {
+        let mut seg_rects = Vec::with_capacity(seg_count);
+        for i in 0..seg_count {
+            seg_rects.push(segment_at_for_slice(ring, i).rect());
+        }
+        match YStripesIndex::build(ring, &seg_rects) {
+            Some((index, stripe_stats)) => {
+                stats.used_y_stripes = true;
+                (Some(index), Some(stripe_stats))
+            }
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+    stats.y_stripes = y_stripes_stats;
+
+    if rtree.is_none() && compressed_quad.is_none() && y_stripes.is_none() {
+        return (None, stats);
     }
 
-    Some(RingIndex {
-        x_min,
-        x_max,
-        seg_count,
-        rtree,
-        compressed_quad,
-    })
+    (
+        Some(RingIndex {
+            x_min,
+            x_max,
+            seg_count,
+            rtree,
+            compressed_quad,
+            y_stripes,
+        }),
+        stats,
+    )
 }
 
 fn rings_contains_point(
@@ -600,6 +827,7 @@ pub struct Polygon {
     options: PolygonBuildOptions,
     exterior_index: Option<RingIndex>,
     hole_indexes: Vec<Option<RingIndex>>,
+    index_stats: PolygonIndexStats,
 }
 
 impl Polygon {
@@ -632,13 +860,19 @@ impl Polygon {
 
     fn rebuild_cache(&mut self) {
         self.rect = Self::compute_rect(&self.exterior);
-        self.exterior_index = build_ring_index(&self.exterior, &self.options);
+        let (exterior_index, exterior_stats) = build_ring_index(&self.exterior, &self.options);
+        self.exterior_index = exterior_index;
+        self.index_stats.exterior = exterior_stats;
 
-        self.hole_indexes = self
+        let hole_indexes_and_stats: Vec<(Option<RingIndex>, RingBuildStats)> = self
             .holes
             .iter()
             .map(|hole| build_ring_index(hole, &self.options))
             .collect();
+        let (hole_indexes, hole_stats): (Vec<Option<RingIndex>>, Vec<RingBuildStats>) =
+            hole_indexes_and_stats.into_iter().unzip();
+        self.hole_indexes = hole_indexes;
+        self.index_stats.holes = hole_stats;
     }
 
     /// Point-In-Polygon check, the normal way.
@@ -730,6 +964,7 @@ impl Polygon {
             options: options.unwrap_or_default(),
             exterior_index: None,
             hole_indexes: Vec::new(),
+            index_stats: PolygonIndexStats::default(),
         };
         poly.rebuild_cache();
         poly
@@ -749,6 +984,10 @@ impl Polygon {
 
     pub fn options(&self) -> PolygonBuildOptions {
         self.options
+    }
+
+    pub fn index_stats(&self) -> &PolygonIndexStats {
+        &self.index_stats
     }
 
     pub fn set_exterior(&mut self, exterior: Vec<Point>) {
@@ -1023,6 +1262,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: false,
                 enable_compressed_quad: false,
+                enable_y_stripes: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -1033,6 +1273,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: true,
                 enable_compressed_quad: true,
+                enable_y_stripes: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -1056,6 +1297,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: false,
                 enable_compressed_quad: false,
+                enable_y_stripes: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -1065,6 +1307,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: true,
                 enable_compressed_quad: false,
+                enable_y_stripes: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -1074,6 +1317,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: false,
                 enable_compressed_quad: true,
+                enable_y_stripes: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -1083,6 +1327,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: true,
                 enable_compressed_quad: true,
+                enable_y_stripes: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -1107,6 +1352,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: true,
                 enable_compressed_quad: true,
+                enable_y_stripes: false,
                 rtree_min_segments: 63,
             }),
         );
@@ -1116,6 +1362,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: true,
                 enable_compressed_quad: true,
+                enable_y_stripes: false,
                 rtree_min_segments: 64,
             }),
         );
@@ -1125,6 +1372,7 @@ mod tests {
             Some(PolygonBuildOptions {
                 enable_rtree: true,
                 enable_compressed_quad: true,
+                enable_y_stripes: false,
                 rtree_min_segments: 65,
             }),
         );
@@ -1151,6 +1399,7 @@ mod tests {
         poly.set_options(PolygonBuildOptions {
             enable_rtree: false,
             enable_compressed_quad: false,
+            enable_y_stripes: false,
             rtree_min_segments: 64,
         });
         assert!(!poly.contains_point(Point { x: 23.0, y: 23.0 }));
@@ -1163,9 +1412,14 @@ mod tests {
         let options = PolygonBuildOptions {
             enable_rtree: false,
             enable_compressed_quad: true,
+            enable_y_stripes: false,
             rtree_min_segments: 64,
         };
-        let index = build_ring_index(&ring, &options).unwrap();
+        let (index, stats) = build_ring_index(&ring, &options);
+        let index = index.unwrap();
+
+        assert!(stats.used_compressed_quad);
+        assert!(!stats.below_threshold);
 
         for y in [-1.2, -1.0, -0.75, -0.2, 0.0, 0.4, 0.99, 1.0, 1.2] {
             let mut from_index = Vec::new();
@@ -1177,5 +1431,81 @@ mod tests {
 
             assert_eq!(from_index, from_scan);
         }
+    }
+
+    #[test]
+    fn y_stripes_candidates_match_scan() {
+        let ring = polygon_with_segments(256);
+        let options = PolygonBuildOptions {
+            enable_rtree: false,
+            enable_compressed_quad: false,
+            enable_y_stripes: true,
+            rtree_min_segments: 64,
+        };
+        let (index, stats) = build_ring_index(&ring, &options);
+        let index = index.unwrap();
+
+        assert!(stats.used_y_stripes);
+        assert!(!stats.below_threshold);
+        let y_stats = stats.y_stripes.as_ref().unwrap();
+        assert_eq!(y_stats.segment_count, 256);
+        assert!(y_stats.stripe_count >= 32);
+        assert!(y_stats.assigned_item_count >= 256);
+        assert!(y_stats.max_bucket_len > 0);
+
+        for y in [-1.2, -1.0, -0.75, -0.2, 0.0, 0.4, 0.99, 1.0, 1.2] {
+            let mut from_index = Vec::new();
+            index.search_candidates(y, &mut from_index);
+            from_index.sort_unstable();
+
+            let mut from_scan = scan_candidates(&ring, y, index.x_min, index.x_max);
+            from_scan.sort_unstable();
+
+            assert_eq!(from_index, from_scan);
+        }
+    }
+
+    #[test]
+    fn polygon_index_stats_capture_threshold_for_compressed_quad() {
+        let indexed = Polygon::new(
+            polygon_with_segments(256),
+            vec![polygon_with_segments(32)],
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: true,
+                enable_y_stripes: false,
+                rtree_min_segments: 64,
+            }),
+        );
+        let stats = indexed.index_stats();
+        assert!(stats.exterior.used_compressed_quad);
+        assert!(!stats.exterior.below_threshold);
+        assert_eq!(stats.exterior.segment_count, 256);
+        assert_eq!(stats.holes.len(), 1);
+        assert!(stats.holes[0].below_threshold);
+        assert!(!stats.holes[0].used_compressed_quad);
+    }
+
+    #[test]
+    fn polygon_index_stats_capture_y_stripes_metrics() {
+        let indexed = Polygon::new(
+            polygon_with_segments(256),
+            vec![polygon_with_segments(32)],
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: false,
+                enable_y_stripes: true,
+                rtree_min_segments: 64,
+            }),
+        );
+        let stats = indexed.index_stats();
+        assert!(stats.exterior.used_y_stripes);
+        assert!(!stats.exterior.below_threshold);
+        assert_eq!(stats.exterior.segment_count, 256);
+        assert!(stats.exterior.y_stripes.is_some());
+        assert_eq!(stats.holes.len(), 1);
+        assert!(stats.holes[0].below_threshold);
+        assert!(!stats.holes[0].used_y_stripes);
+        assert!(stats.holes[0].y_stripes.is_none());
     }
 }

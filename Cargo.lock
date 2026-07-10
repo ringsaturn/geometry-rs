@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "geometry-rs"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "geo",
  "rtree_rs",

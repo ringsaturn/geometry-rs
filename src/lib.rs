@@ -152,7 +152,7 @@ struct RingIndex {
 }
 
 impl RingIndex {
-    fn search_candidates(&self, point_y: f64, out: &mut Vec<usize>) {
+    fn search_candidates(&self, ring: &[Point], point_y: f64, out: &mut Vec<usize>) {
         let query_rect = Rect {
             min: Point {
                 x: self.x_min,
@@ -179,7 +179,7 @@ impl RingIndex {
 
         if let Some(index) = self.y_stripes.as_ref() {
             let mut tmp = Vec::new();
-            index.search(point_y, &mut tmp);
+            index.search(ring, point_y, &mut tmp);
             for idx in tmp {
                 if idx < self.seg_count && !seen[idx] {
                     seen[idx] = true;
@@ -203,16 +203,15 @@ impl RingIndex {
 
 #[derive(Clone, Copy, Default)]
 struct YStripe {
-    start: usize,
-    count: usize,
+    start: u32,
+    count: u32,
 }
 
 struct YStripesIndex {
     min_y: f64,
     height: f64,
     stripes: Vec<YStripe>,
-    indexes: Vec<usize>,
-    y_ranges: Vec<(f64, f64)>,
+    indexes: Vec<u32>,
 }
 
 impl YStripesIndex {
@@ -245,17 +244,21 @@ impl YStripesIndex {
         let mut stripes = vec![YStripe::default(); stripe_count];
         let mut offset = 0usize;
         for (stripe, count) in stripes.iter_mut().zip(&counts) {
-            stripe.start = offset;
+            stripe.start = u32::try_from(offset).ok()?;
             stripe.count = 0;
             offset += *count;
         }
+        // Segment indices and stripe offsets are stored as u32.
+        if u32::try_from(offset).is_err() || u32::try_from(seg_rects.len()).is_err() {
+            return None;
+        }
 
-        let mut indexes = vec![0usize; offset];
+        let mut indexes = vec![0u32; offset];
         for (idx, rect) in seg_rects.iter().copied().enumerate() {
             let (start, end) = stripe_bounds_for_rect(rect, min_y, height, stripe_count);
             for stripe_index in start..=end {
                 let stripe = &mut stripes[stripe_index];
-                indexes[stripe.start + stripe.count] = idx;
+                indexes[(stripe.start + stripe.count) as usize] = idx as u32;
                 stripe.count += 1;
             }
         }
@@ -270,24 +273,18 @@ impl YStripesIndex {
             stats.stripe_count = 1;
         }
 
-        let y_ranges = seg_rects
-            .iter()
-            .map(|rect| (rect.min.y, rect.max.y))
-            .collect::<Vec<_>>();
-
         Some((
             Self {
                 min_y,
                 height,
                 stripes,
                 indexes,
-                y_ranges,
             },
             stats,
         ))
     }
 
-    fn search(&self, y: f64, out: &mut Vec<usize>) {
+    fn search(&self, ring: &[Point], y: f64, out: &mut Vec<usize>) {
         if self.height == 0.0 {
             if y != self.min_y {
                 return;
@@ -303,11 +300,18 @@ impl YStripesIndex {
             raw.clamp(0, self.stripes.len() as isize - 1) as usize
         };
         let stripe = self.stripes[stripe_index];
-        let end = stripe.start + stripe.count;
-        for idx in &self.indexes[stripe.start..end] {
-            let (seg_min_y, seg_max_y) = self.y_ranges[*idx];
+        let start = stripe.start as usize;
+        let end = start + stripe.count as usize;
+        for idx in &self.indexes[start..end] {
+            let idx = *idx as usize;
+            // Recompute the segment's y range from its endpoints instead of
+            // storing it; the endpoints are about to be fetched for the
+            // raycast anyway.
+            let a_y = ring[idx].y;
+            let b_y = ring[idx + 1].y;
+            let (seg_min_y, seg_max_y) = if a_y <= b_y { (a_y, b_y) } else { (b_y, a_y) };
             if y >= seg_min_y && y <= seg_max_y {
-                out.push(*idx);
+                out.push(idx);
             }
         }
     }
@@ -611,7 +615,7 @@ fn rings_contains_point(
 
     if let Some(index) = ring_index {
         let mut candidates = Vec::new();
-        index.search_candidates(point.y, &mut candidates);
+        index.search_candidates(ring, point.y, &mut candidates);
         for i in candidates {
             let seg = segment_at_for_slice(ring, i);
             let res: RaycastResult = raycast(&seg, point);
@@ -1423,7 +1427,7 @@ mod tests {
 
         for y in [-1.2, -1.0, -0.75, -0.2, 0.0, 0.4, 0.99, 1.0, 1.2] {
             let mut from_index = Vec::new();
-            index.search_candidates(y, &mut from_index);
+            index.search_candidates(&ring, y, &mut from_index);
             from_index.sort_unstable();
 
             let mut from_scan = scan_candidates(&ring, y, index.x_min, index.x_max);
@@ -1455,7 +1459,7 @@ mod tests {
 
         for y in [-1.2, -1.0, -0.75, -0.2, 0.0, 0.4, 0.99, 1.0, 1.2] {
             let mut from_index = Vec::new();
-            index.search_candidates(y, &mut from_index);
+            index.search_candidates(&ring, y, &mut from_index);
             from_index.sort_unstable();
 
             let mut from_scan = scan_candidates(&ring, y, index.x_min, index.x_max);

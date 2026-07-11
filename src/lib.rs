@@ -5,10 +5,197 @@ mod next_after;
 use crate::next_after::NextAfter;
 use rtree_rs::{RTree, Rect as RTreeRect};
 
-#[derive(Copy, Clone, Debug)]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Point<T = f64> {
+    pub x: T,
+    pub y: T,
+}
+
+/// A coordinate stored as an integer with an application-defined scale.
+pub type I32Point = Point<i32>;
+
+pub trait ContainsPoint<Q> {
+    fn contains_point(&self, point: Q) -> bool;
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum I32RaycastMode {
+    #[default]
+    Float,
+    Integer,
+}
+
+/// A compact polygon whose coordinates are scaled integers.
+///
+/// The raycast can convert segment endpoints to `f64` in-register or scale the
+/// query once and use integer cross products. Both modes use eight bytes per
+/// stored point.
+pub struct I32Polygon {
+    exterior: Vec<I32Point>,
+    holes: Vec<Vec<I32Point>>,
+    min: I32Point,
+    max: I32Point,
+    scale: f64,
+    raycast_mode: I32RaycastMode,
+}
+
+impl I32Polygon {
+    pub fn new(exterior: Vec<I32Point>, holes: Vec<Vec<I32Point>>, scale: f64) -> Self {
+        Self::new_with_mode(exterior, holes, scale, I32RaycastMode::default())
+    }
+
+    pub fn new_with_mode(
+        exterior: Vec<I32Point>,
+        holes: Vec<Vec<I32Point>>,
+        scale: f64,
+        raycast_mode: I32RaycastMode,
+    ) -> Self {
+        assert!(!exterior.is_empty(), "polygon exterior must not be empty");
+        assert!(
+            scale.is_finite() && scale > 0.0,
+            "scale must be positive and finite"
+        );
+        let mut min = exterior[0];
+        let mut max = exterior[0];
+        for point in &exterior {
+            min.x = min.x.min(point.x);
+            min.y = min.y.min(point.y);
+            max.x = max.x.max(point.x);
+            max.y = max.y.max(point.y);
+        }
+        Self {
+            exterior,
+            holes,
+            min,
+            max,
+            scale,
+            raycast_mode,
+        }
+    }
+
+    pub fn contains_point(&self, point: Point) -> bool {
+        match self.raycast_mode {
+            I32RaycastMode::Float => self.contains_point_float(point),
+            I32RaycastMode::Integer => self.contains_point_integer(point),
+        }
+    }
+
+    fn contains_point_float(&self, point: Point) -> bool {
+        let scaled = Point {
+            x: point.x * self.scale,
+            y: point.y * self.scale,
+        };
+        if scaled.x < f64::from(self.min.x)
+            || scaled.x > f64::from(self.max.x)
+            || scaled.y < f64::from(self.min.y)
+            || scaled.y > f64::from(self.max.y)
+            || !i32_ring_contains_point_float(&self.exterior, scaled, false)
+        {
+            return false;
+        }
+        !self
+            .holes
+            .iter()
+            .any(|ring| i32_ring_contains_point_float(ring, scaled, false))
+    }
+
+    fn contains_point_integer(&self, point: Point) -> bool {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return false;
+        }
+        let scaled = Point {
+            x: (point.x * self.scale).round() as i64,
+            y: (point.y * self.scale).round() as i64,
+        };
+        if scaled.x < i64::from(self.min.x)
+            || scaled.x > i64::from(self.max.x)
+            || scaled.y < i64::from(self.min.y)
+            || scaled.y > i64::from(self.max.y)
+            || !i32_ring_contains_point_integer(&self.exterior, scaled, false)
+        {
+            return false;
+        }
+        !self
+            .holes
+            .iter()
+            .any(|ring| i32_ring_contains_point_integer(ring, scaled, false))
+    }
+
+    pub fn exterior(&self) -> &[I32Point] {
+        &self.exterior
+    }
+
+    pub fn holes(&self) -> &[Vec<I32Point>] {
+        &self.holes
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+}
+
+impl ContainsPoint<Point> for I32Polygon {
+    fn contains_point(&self, point: Point) -> bool {
+        I32Polygon::contains_point(self, point)
+    }
+}
+
+#[inline]
+fn i32_ring_contains_point_float(ring: &[I32Point], point: Point, allow_on_edge: bool) -> bool {
+    let mut inside = false;
+    for pair in ring.windows(2) {
+        let segment = Segment {
+            a: Point {
+                x: f64::from(pair[0].x),
+                y: f64::from(pair[0].y),
+            },
+            b: Point {
+                x: f64::from(pair[1].x),
+                y: f64::from(pair[1].y),
+            },
+        };
+        let min_y = segment.a.y.min(segment.b.y);
+        let max_y = segment.a.y.max(segment.b.y);
+        if point.y < min_y || point.y > max_y {
+            continue;
+        }
+        let result = raycast(&segment, point);
+        if result.on {
+            return allow_on_edge;
+        }
+        if result.inside {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+#[inline]
+fn i32_ring_contains_point_integer(
+    ring: &[I32Point],
+    point: Point<i64>,
+    allow_on_edge: bool,
+) -> bool {
+    let mut inside = false;
+    for pair in ring.windows(2) {
+        let ax = i64::from(pair[0].x);
+        let ay = i64::from(pair[0].y);
+        let bx = i64::from(pair[1].x);
+        let by = i64::from(pair[1].y);
+        let cross = (bx - ax) * (point.y - ay) - (by - ay) * (point.x - ax);
+        if cross == 0
+            && point.x >= ax.min(bx)
+            && point.x <= ax.max(bx)
+            && point.y >= ay.min(by)
+            && point.y <= ay.max(by)
+        {
+            return allow_on_edge;
+        }
+        if (ay > point.y) != (by > point.y) && (cross > 0) == (by > ay) {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1010,6 +1197,12 @@ impl Polygon {
     }
 }
 
+impl ContainsPoint<Point> for Polygon {
+    fn contains_point(&self, point: Point) -> bool {
+        Polygon::contains_point(self, point)
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Segment {
     pub a: Point,
@@ -1252,6 +1445,33 @@ mod tests {
         let poly = Polygon::new(square(0.0, 10.0), vec![square(3.0, 7.0)], None);
         assert!(poly.contains_point(Point { x: 1.0, y: 1.0 }));
         assert!(!poly.contains_point(Point { x: 5.0, y: 5.0 }));
+    }
+
+    #[test]
+    fn i32_polygon_contains_with_hole_and_fractional_query() {
+        let square = |min, max| {
+            vec![
+                I32Point { x: min, y: min },
+                I32Point { x: min, y: max },
+                I32Point { x: max, y: max },
+                I32Point { x: max, y: min },
+                I32Point { x: min, y: min },
+            ]
+        };
+        for mode in [I32RaycastMode::Float, I32RaycastMode::Integer] {
+            let poly = I32Polygon::new_with_mode(
+                square(0, 1_000_000),
+                vec![square(400_000, 600_000)],
+                1e5,
+                mode,
+            );
+            assert!(poly.contains_point(Point {
+                x: 1.23456,
+                y: 2.34567
+            }));
+            assert!(!poly.contains_point(Point { x: 5.0, y: 5.0 }));
+            assert!(!poly.contains_point(Point { x: 11.0, y: 5.0 }));
+        }
     }
 
     #[test]

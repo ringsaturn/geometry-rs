@@ -14,6 +14,48 @@ pub struct Point<T = f64> {
 /// A coordinate stored as an integer with an application-defined scale.
 pub type I32Point = Point<i32>;
 
+/// Coordinate storage for [`Polygon`].
+///
+/// The polygon's bounding box, acceleration indexes and raycast all operate in
+/// "storage space": the query point is multiplied by the polygon's scale once
+/// per containment check, and segment endpoints are converted with
+/// [`CoordStorage::to_f64`] in registers. `f64::from(i32)` is exact (`i32`
+/// fits within `f64`'s 53-bit mantissa), so integer storage loses no
+/// precision, and `x * 1.0` is an exact identity, so `f64` storage behaves
+/// bit-identically to a non-generic implementation.
+pub trait CoordStorage: Copy + PartialOrd {
+    /// Convert a stored coordinate to `f64`.
+    /// Identity for `f64`; exact `f64::from` for `i32`.
+    fn to_f64(self) -> f64;
+    /// Convert a stored coordinate to `i64` for the opt-in integer raycast.
+    /// Only meaningful for integer storage.
+    fn to_i64(self) -> i64;
+}
+
+impl CoordStorage for f64 {
+    #[inline(always)]
+    fn to_f64(self) -> f64 {
+        self
+    }
+
+    #[inline(always)]
+    fn to_i64(self) -> i64 {
+        self as i64
+    }
+}
+
+impl CoordStorage for i32 {
+    #[inline(always)]
+    fn to_f64(self) -> f64 {
+        f64::from(self)
+    }
+
+    #[inline(always)]
+    fn to_i64(self) -> i64 {
+        i64::from(self)
+    }
+}
+
 pub trait ContainsPoint<Q> {
     fn contains_point(&self, point: Q) -> bool;
 }
@@ -27,161 +69,22 @@ pub enum I32RaycastMode {
 
 /// A compact polygon whose coordinates are scaled integers.
 ///
-/// The raycast can convert segment endpoints to `f64` in-register or scale the
-/// query once and use integer cross products. Both modes use eight bytes per
-/// stored point.
-pub struct I32Polygon {
-    exterior: Vec<I32Point>,
-    holes: Vec<Vec<I32Point>>,
-    min: I32Point,
-    max: I32Point,
-    scale: f64,
-    raycast_mode: I32RaycastMode,
-}
-
-impl I32Polygon {
-    pub fn new(exterior: Vec<I32Point>, holes: Vec<Vec<I32Point>>, scale: f64) -> Self {
-        Self::new_with_mode(exterior, holes, scale, I32RaycastMode::default())
-    }
-
-    pub fn new_with_mode(
-        exterior: Vec<I32Point>,
-        holes: Vec<Vec<I32Point>>,
-        scale: f64,
-        raycast_mode: I32RaycastMode,
-    ) -> Self {
-        assert!(!exterior.is_empty(), "polygon exterior must not be empty");
-        assert!(
-            scale.is_finite() && scale > 0.0,
-            "scale must be positive and finite"
-        );
-        let mut min = exterior[0];
-        let mut max = exterior[0];
-        for point in &exterior {
-            min.x = min.x.min(point.x);
-            min.y = min.y.min(point.y);
-            max.x = max.x.max(point.x);
-            max.y = max.y.max(point.y);
-        }
-        Self {
-            exterior,
-            holes,
-            min,
-            max,
-            scale,
-            raycast_mode,
-        }
-    }
-
-    pub fn contains_point(&self, point: Point) -> bool {
-        match self.raycast_mode {
-            I32RaycastMode::Float => self.contains_point_float(point),
-            I32RaycastMode::Integer => self.contains_point_integer(point),
-        }
-    }
-
-    fn contains_point_float(&self, point: Point) -> bool {
-        let scaled = Point {
-            x: point.x * self.scale,
-            y: point.y * self.scale,
-        };
-        if scaled.x < f64::from(self.min.x)
-            || scaled.x > f64::from(self.max.x)
-            || scaled.y < f64::from(self.min.y)
-            || scaled.y > f64::from(self.max.y)
-            || !i32_ring_contains_point_float(&self.exterior, scaled, false)
-        {
-            return false;
-        }
-        !self
-            .holes
-            .iter()
-            .any(|ring| i32_ring_contains_point_float(ring, scaled, false))
-    }
-
-    fn contains_point_integer(&self, point: Point) -> bool {
-        if !point.x.is_finite() || !point.y.is_finite() {
-            return false;
-        }
-        let scaled = Point {
-            x: (point.x * self.scale).round() as i64,
-            y: (point.y * self.scale).round() as i64,
-        };
-        if scaled.x < i64::from(self.min.x)
-            || scaled.x > i64::from(self.max.x)
-            || scaled.y < i64::from(self.min.y)
-            || scaled.y > i64::from(self.max.y)
-            || !i32_ring_contains_point_integer(&self.exterior, scaled, false)
-        {
-            return false;
-        }
-        !self
-            .holes
-            .iter()
-            .any(|ring| i32_ring_contains_point_integer(ring, scaled, false))
-    }
-
-    pub fn exterior(&self) -> &[I32Point] {
-        &self.exterior
-    }
-
-    pub fn holes(&self) -> &[Vec<I32Point>] {
-        &self.holes
-    }
-
-    pub fn scale(&self) -> f64 {
-        self.scale
-    }
-}
-
-impl ContainsPoint<Point> for I32Polygon {
-    fn contains_point(&self, point: Point) -> bool {
-        I32Polygon::contains_point(self, point)
-    }
-}
+/// This is [`Polygon`] with `i32` storage: eight bytes per stored point, with
+/// full support for the acceleration indexes in [`PolygonBuildOptions`].
+pub type I32Polygon = Polygon<i32>;
 
 #[inline]
-fn i32_ring_contains_point_float(ring: &[I32Point], point: Point, allow_on_edge: bool) -> bool {
-    let mut inside = false;
-    for pair in ring.windows(2) {
-        let segment = Segment {
-            a: Point {
-                x: f64::from(pair[0].x),
-                y: f64::from(pair[0].y),
-            },
-            b: Point {
-                x: f64::from(pair[1].x),
-                y: f64::from(pair[1].y),
-            },
-        };
-        let min_y = segment.a.y.min(segment.b.y);
-        let max_y = segment.a.y.max(segment.b.y);
-        if point.y < min_y || point.y > max_y {
-            continue;
-        }
-        let result = raycast(&segment, point);
-        if result.on {
-            return allow_on_edge;
-        }
-        if result.inside {
-            inside = !inside;
-        }
-    }
-    inside
-}
-
-#[inline]
-fn i32_ring_contains_point_integer(
-    ring: &[I32Point],
+fn ring_contains_point_integer<T: CoordStorage>(
+    ring: &[Point<T>],
     point: Point<i64>,
     allow_on_edge: bool,
 ) -> bool {
     let mut inside = false;
     for pair in ring.windows(2) {
-        let ax = i64::from(pair[0].x);
-        let ay = i64::from(pair[0].y);
-        let bx = i64::from(pair[1].x);
-        let by = i64::from(pair[1].y);
+        let ax = pair[0].x.to_i64();
+        let ay = pair[0].y.to_i64();
+        let bx = pair[1].x.to_i64();
+        let by = pair[1].y.to_i64();
         let cross = (bx - ax) * (point.y - ay) - (by - ay) * (point.x - ax);
         if cross == 0
             && point.x >= ax.min(bx)
@@ -339,7 +242,49 @@ struct RingIndex {
 }
 
 impl RingIndex {
-    fn search_candidates(&self, ring: &[Point], point_y: f64, out: &mut Vec<usize>) {
+    fn search_candidates<T: CoordStorage>(
+        &self,
+        ring: &[Point<T>],
+        point_y: f64,
+        out: &mut Vec<usize>,
+    ) {
+        // The common configurations enable one index. Avoid allocating the
+        // deduplication bitmap and temporary vectors when no merge is needed.
+        match (
+            self.rtree.as_ref(),
+            self.y_stripes.as_ref(),
+            self.compressed_quad.as_ref(),
+        ) {
+            (None, Some(index), None) => {
+                index.search(ring, point_y, out);
+                return;
+            }
+            (Some(tree), None, None) => {
+                let query = RTreeRect::new([self.x_min, point_y], [self.x_max, point_y]);
+                out.extend(
+                    tree.search(query)
+                        .map(|item| *item.data)
+                        .filter(|&idx| idx < self.seg_count),
+                );
+                return;
+            }
+            (None, None, Some(index)) => {
+                let query_rect = Rect {
+                    min: Point {
+                        x: self.x_min,
+                        y: point_y,
+                    },
+                    max: Point {
+                        x: self.x_max,
+                        y: point_y,
+                    },
+                };
+                index.search_intersects(query_rect, out);
+                return;
+            }
+            _ => {}
+        }
+
         let query_rect = Rect {
             min: Point {
                 x: self.x_min,
@@ -402,7 +347,10 @@ struct YStripesIndex {
 }
 
 impl YStripesIndex {
-    fn build(ring: &[Point], seg_rects: &[Rect]) -> Option<(Self, YStripesBuildStats)> {
+    fn build<T: CoordStorage>(
+        ring: &[Point<T>],
+        seg_rects: &[Rect],
+    ) -> Option<(Self, YStripesBuildStats)> {
         if seg_rects.is_empty() {
             return None;
         }
@@ -471,7 +419,7 @@ impl YStripesIndex {
         ))
     }
 
-    fn search(&self, ring: &[Point], y: f64, out: &mut Vec<usize>) {
+    fn search<T: CoordStorage>(&self, ring: &[Point<T>], y: f64, out: &mut Vec<usize>) {
         if self.height == 0.0 {
             if y != self.min_y {
                 return;
@@ -494,8 +442,8 @@ impl YStripesIndex {
             // Recompute the segment's y range from its endpoints instead of
             // storing it; the endpoints are about to be fetched for the
             // raycast anyway.
-            let a_y = ring[idx].y;
-            let b_y = ring[idx + 1].y;
+            let a_y = ring[idx].y.to_f64();
+            let b_y = ring[idx + 1].y.to_f64();
             let (seg_min_y, seg_max_y) = if a_y <= b_y { (a_y, b_y) } else { (b_y, a_y) };
             if y >= seg_min_y && y <= seg_max_y {
                 out.push(idx);
@@ -523,24 +471,32 @@ fn stripe_bounds_for_rect(
     )
 }
 
-fn calc_ring_area_and_perimeter(ring: &[Point]) -> (f64, f64) {
+fn calc_ring_area_and_perimeter<T: CoordStorage>(ring: &[Point<T>]) -> (f64, f64) {
     let seg_count = ring_segment_count(ring);
     if seg_count == 0 {
         return (0.0, 0.0);
     }
 
+    // Computed in storage space; the stripe-count score below is the
+    // isoperimetric quotient, which is invariant under uniform scaling.
     let mut signed_area = 0.0;
     let mut perimeter = 0.0;
     for i in 0..seg_count {
-        let a = ring[i];
-        let b = ring[i + 1];
+        let a = Point {
+            x: ring[i].x.to_f64(),
+            y: ring[i].y.to_f64(),
+        };
+        let b = Point {
+            x: ring[i + 1].x.to_f64(),
+            y: ring[i + 1].y.to_f64(),
+        };
         signed_area += a.x * b.y - b.x * a.y;
         perimeter += ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
     }
     (signed_area.abs() * 0.5, perimeter)
 }
 
-fn calc_y_stripe_count(ring: &[Point], seg_count: usize) -> usize {
+fn calc_y_stripe_count<T: CoordStorage>(ring: &[Point<T>], seg_count: usize) -> usize {
     let (area, perimeter) = calc_ring_area_and_perimeter(ring);
     let mut score = 0.0;
     if perimeter > 0.0 {
@@ -576,29 +532,31 @@ struct CompressedQuadIndex {
 }
 
 impl CompressedQuadIndex {
-    fn build(ring: &[Point]) -> Option<Self> {
+    fn build<T: CoordStorage>(ring: &[Point<T>]) -> Option<Self> {
         let seg_count = ring_segment_count(ring);
         if seg_count == 0 {
             return None;
         }
 
-        let mut min_x = ring[0].x;
-        let mut min_y = ring[0].y;
-        let mut max_x = ring[0].x;
-        let mut max_y = ring[0].y;
+        let mut min_x = ring[0].x.to_f64();
+        let mut min_y = ring[0].y.to_f64();
+        let mut max_x = min_x;
+        let mut max_y = min_y;
 
         for p in ring.iter().take(seg_count) {
-            if p.x < min_x {
-                min_x = p.x;
+            let x = p.x.to_f64();
+            let y = p.y.to_f64();
+            if x < min_x {
+                min_x = x;
             }
-            if p.y < min_y {
-                min_y = p.y;
+            if y < min_y {
+                min_y = y;
             }
-            if p.x > max_x {
-                max_x = p.x;
+            if x > max_x {
+                max_x = x;
             }
-            if p.y > max_y {
-                max_y = p.y;
+            if y > max_y {
+                max_y = y;
             }
         }
 
@@ -689,19 +647,28 @@ impl CompressedQuadIndex {
     }
 }
 
-fn ring_segment_count(ring: &[Point]) -> usize {
+fn ring_segment_count<T>(ring: &[Point<T>]) -> usize {
     ring.len().saturating_sub(1)
 }
 
-fn segment_at_for_slice(ring: &[Point], index: usize) -> Segment {
+// Rings are stored closed (first point repeated at the end), so segment `i`
+// is `ring[i]..ring[i+1]` and the segment count is `len - 1`. The YStripes
+// build and its query-time y-range recomputation both rely on this numbering.
+fn segment_at_for_slice<T: CoordStorage>(ring: &[Point<T>], index: usize) -> Segment {
     Segment {
-        a: ring[index],
-        b: ring[index + 1],
+        a: Point {
+            x: ring[index].x.to_f64(),
+            y: ring[index].y.to_f64(),
+        },
+        b: Point {
+            x: ring[index + 1].x.to_f64(),
+            y: ring[index + 1].y.to_f64(),
+        },
     }
 }
 
-fn build_ring_index(
-    ring: &[Point],
+fn build_ring_index<T: CoordStorage>(
+    ring: &[Point<T>],
     options: &PolygonBuildOptions,
 ) -> (Option<RingIndex>, RingBuildStats) {
     let seg_count = ring_segment_count(ring);
@@ -717,14 +684,15 @@ fn build_ring_index(
         return (None, stats);
     }
 
-    let mut x_min = ring[0].x;
-    let mut x_max = ring[0].x;
+    let mut x_min = ring[0].x.to_f64();
+    let mut x_max = x_min;
     for p in ring.iter().take(seg_count) {
-        if p.x < x_min {
-            x_min = p.x;
+        let x = p.x.to_f64();
+        if x < x_min {
+            x_min = x;
         }
-        if p.x > x_max {
-            x_max = p.x;
+        if x > x_max {
+            x_max = x;
         }
     }
 
@@ -792,8 +760,8 @@ fn build_ring_index(
     )
 }
 
-fn rings_contains_point(
-    ring: &[Point],
+fn rings_contains_point<T: CoordStorage>(
+    ring: &[Point<T>],
     ring_index: Option<&RingIndex>,
     point: Point,
     allow_on_edge: bool,
@@ -817,32 +785,34 @@ fn rings_contains_point(
         return inside;
     }
 
-    let ray_rect = Rect {
-        min: Point {
-            x: std::f64::NEG_INFINITY,
-            y: point.y,
-        },
-        max: Point {
-            x: std::f64::INFINITY,
-            y: point.y,
-        },
-    };
-
     for pair in ring.windows(2) {
         let seg = Segment {
-            a: pair[0],
-            b: pair[1],
+            a: Point {
+                x: pair[0].x.to_f64(),
+                y: pair[0].y.to_f64(),
+            },
+            b: Point {
+                x: pair[1].x.to_f64(),
+                y: pair[1].y.to_f64(),
+            },
         };
 
-        if seg.rect().intersects_rect(ray_rect) {
-            let res: RaycastResult = raycast(&seg, point);
-            if res.on {
-                inside = allow_on_edge;
-                break;
-            }
-            if res.inside {
-                inside = !inside;
-            }
+        // The ray is horizontal and unbounded in x, so intersecting the
+        // segment's rect reduces to a y-range check; f64::min/max keep it
+        // branchless.
+        let min_y = seg.a.y.min(seg.b.y);
+        let max_y = seg.a.y.max(seg.b.y);
+        if point.y < min_y || point.y > max_y {
+            continue;
+        }
+
+        let res: RaycastResult = raycast(&seg, point);
+        if res.on {
+            inside = allow_on_edge;
+            break;
+        }
+        if res.inside {
+            inside = !inside;
         }
     }
 
@@ -1011,46 +981,79 @@ fn compress_quad_node(node: &QuadNode, dst: &mut Vec<u8>) {
     }
 }
 
-pub struct Polygon {
-    exterior: Vec<Point>,
-    holes: Vec<Vec<Point>>,
-    rect: Rect,
+/// A polygon whose coordinates are stored as `T` (`f64` degrees by default,
+/// or scaled `i32`, see [`I32Polygon`]).
+///
+/// The bounding box, the acceleration indexes and the raycast all operate in
+/// storage space: [`Polygon::contains_point`] multiplies the query point by
+/// the polygon's scale exactly once, and segment endpoints are converted to
+/// `f64` in registers during the raycast.
+pub struct Polygon<T: CoordStorage = f64> {
+    exterior: Vec<Point<T>>,
+    holes: Vec<Vec<Point<T>>>,
+    // Storage-space bounding box, kept in storage type so the bbox reject
+    // scan touches half the memory for i32 polygons.
+    min: Point<T>,
+    max: Point<T>,
+    scale: f64,
+    raycast_mode: I32RaycastMode,
     options: PolygonBuildOptions,
     exterior_index: Option<RingIndex>,
     hole_indexes: Vec<Option<RingIndex>>,
     index_stats: PolygonIndexStats,
 }
 
-impl Polygon {
-    fn compute_rect(exterior: &[Point]) -> Rect {
-        let mut minx: f64 = exterior[0].x;
-        let mut miny: f64 = exterior[0].y;
-        let mut maxx: f64 = exterior[0].x;
-        let mut maxy: f64 = exterior[0].y;
+impl<T: CoordStorage> Polygon<T> {
+    fn compute_bounds(exterior: &[Point<T>]) -> (Point<T>, Point<T>) {
+        let mut min = exterior[0];
+        let mut max = exterior[0];
 
         for p in exterior.iter() {
-            if p.x < minx {
-                minx = p.x;
+            if p.x < min.x {
+                min.x = p.x;
             }
-            if p.y < miny {
-                miny = p.y;
+            if p.y < min.y {
+                min.y = p.y;
             }
-            if p.x > maxx {
-                maxx = p.x;
+            if p.x > max.x {
+                max.x = p.x;
             }
-            if p.y > maxy {
-                maxy = p.y;
+            if p.y > max.y {
+                max.y = p.y;
             }
         }
 
-        Rect {
-            min: Point { x: minx, y: miny },
-            max: Point { x: maxx, y: maxy },
-        }
+        (min, max)
+    }
+
+    fn build(
+        exterior: Vec<Point<T>>,
+        holes: Vec<Vec<Point<T>>>,
+        scale: f64,
+        raycast_mode: I32RaycastMode,
+        options: Option<PolygonBuildOptions>,
+    ) -> Self {
+        let (min, max) = Self::compute_bounds(&exterior);
+        let mut poly = Self {
+            exterior,
+            holes,
+            min,
+            max,
+            scale,
+            raycast_mode,
+            options: options.unwrap_or_default(),
+            exterior_index: None,
+            hole_indexes: Vec::new(),
+            index_stats: PolygonIndexStats::default(),
+        };
+        poly.rebuild_cache();
+        poly
     }
 
     fn rebuild_cache(&mut self) {
-        self.rect = Self::compute_rect(&self.exterior);
+        let (min, max) = Self::compute_bounds(&self.exterior);
+        self.min = min;
+        self.max = max;
         let (exterior_index, exterior_stats) = build_ring_index(&self.exterior, &self.options);
         self.exterior_index = exterior_index;
         self.index_stats.exterior = exterior_stats;
@@ -1084,15 +1087,111 @@ impl Polygon {
         return true;
     }
 
-    /// Do point-in-polygon search.
+    /// Do point-in-polygon search. `p` is in unscaled (degree) coordinates.
     pub fn contains_point(&self, p: Point) -> bool {
-        if !self.rect.contains_point(p) {
+        match self.raycast_mode {
+            I32RaycastMode::Float => self.contains_point_float(p),
+            I32RaycastMode::Integer => self.contains_point_integer(p),
+        }
+    }
+
+    fn contains_point_float(&self, p: Point) -> bool {
+        // `x * 1.0` is an exact identity under IEEE 754, so f64 polygons
+        // (scale == 1.0) behave bit-identically to the pre-generic code.
+        let scaled = Point {
+            x: p.x * self.scale,
+            y: p.y * self.scale,
+        };
+        // Same truth table as Rect::contains_point; the storage-type bounds
+        // are converted in registers.
+        if !(scaled.x >= self.min.x.to_f64()
+            && scaled.x <= self.max.x.to_f64()
+            && scaled.y >= self.min.y.to_f64()
+            && scaled.y <= self.max.y.to_f64())
+        {
             return false;
         }
 
-        return self.contains_point_normal(p);
+        return self.contains_point_normal(scaled);
     }
 
+    // Opt-in integer cross-product raycast; snaps the query to the storage
+    // grid and ignores acceleration indexes.
+    fn contains_point_integer(&self, p: Point) -> bool {
+        if !p.x.is_finite() || !p.y.is_finite() {
+            return false;
+        }
+        let scaled = Point::<i64> {
+            x: (p.x * self.scale).round() as i64,
+            y: (p.y * self.scale).round() as i64,
+        };
+        if scaled.x < self.min.x.to_i64()
+            || scaled.x > self.max.x.to_i64()
+            || scaled.y < self.min.y.to_i64()
+            || scaled.y > self.max.y.to_i64()
+            || !ring_contains_point_integer(&self.exterior, scaled, false)
+        {
+            return false;
+        }
+        !self
+            .holes
+            .iter()
+            .any(|ring| ring_contains_point_integer(ring, scaled, false))
+    }
+    pub fn exterior(&self) -> &[Point<T>] {
+        &self.exterior
+    }
+
+    pub fn holes(&self) -> &[Vec<Point<T>>] {
+        &self.holes
+    }
+
+    /// The polygon's bounding box in storage space (degrees for `f64`
+    /// polygons, scaled integers for [`I32Polygon`]).
+    pub fn rect(&self) -> Rect {
+        Rect {
+            min: Point {
+                x: self.min.x.to_f64(),
+                y: self.min.y.to_f64(),
+            },
+            max: Point {
+                x: self.max.x.to_f64(),
+                y: self.max.y.to_f64(),
+            },
+        }
+    }
+
+    /// The factor a degree coordinate is multiplied by to reach storage
+    /// space: `1.0` for `f64` polygons, e.g. `1e5` for [`I32Polygon`].
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub fn options(&self) -> PolygonBuildOptions {
+        self.options
+    }
+
+    pub fn index_stats(&self) -> &PolygonIndexStats {
+        &self.index_stats
+    }
+
+    pub fn set_exterior(&mut self, exterior: Vec<Point<T>>) {
+        self.exterior = exterior;
+        self.rebuild_cache();
+    }
+
+    pub fn set_holes(&mut self, holes: Vec<Vec<Point<T>>>) {
+        self.holes = holes;
+        self.rebuild_cache();
+    }
+
+    pub fn set_options(&mut self, options: PolygonBuildOptions) {
+        self.options = options;
+        self.rebuild_cache();
+    }
+}
+
+impl Polygon {
     /// Create a new Polygon instance from exterior and holes.
     ///
     /// Example:
@@ -1145,59 +1244,46 @@ impl Polygon {
         holes: Vec<Vec<Point>>,
         options: Option<PolygonBuildOptions>,
     ) -> Polygon {
-        let mut poly = Polygon {
-            exterior,
-            holes,
-            rect: Rect {
-                min: Point { x: 0.0, y: 0.0 },
-                max: Point { x: 0.0, y: 0.0 },
-            },
-            options: options.unwrap_or_default(),
-            exterior_index: None,
-            hole_indexes: Vec::new(),
-            index_stats: PolygonIndexStats::default(),
-        };
-        poly.rebuild_cache();
-        poly
-    }
-
-    pub fn exterior(&self) -> &[Point] {
-        &self.exterior
-    }
-
-    pub fn holes(&self) -> &[Vec<Point>] {
-        &self.holes
-    }
-
-    pub fn rect(&self) -> Rect {
-        self.rect
-    }
-
-    pub fn options(&self) -> PolygonBuildOptions {
-        self.options
-    }
-
-    pub fn index_stats(&self) -> &PolygonIndexStats {
-        &self.index_stats
-    }
-
-    pub fn set_exterior(&mut self, exterior: Vec<Point>) {
-        self.exterior = exterior;
-        self.rebuild_cache();
-    }
-
-    pub fn set_holes(&mut self, holes: Vec<Vec<Point>>) {
-        self.holes = holes;
-        self.rebuild_cache();
-    }
-
-    pub fn set_options(&mut self, options: PolygonBuildOptions) {
-        self.options = options;
-        self.rebuild_cache();
+        Self::build(exterior, holes, 1.0, I32RaycastMode::Float, options)
     }
 }
 
-impl ContainsPoint<Point> for Polygon {
+impl I32Polygon {
+    /// Create a polygon from scaled integer coordinates with no acceleration
+    /// index.
+    ///
+    /// (There is intentionally no `I32Polygon::new`: a second inherent `new`
+    /// would make plain `Polygon::new(...)` calls ambiguous.)
+    pub fn new_with_mode(
+        exterior: Vec<I32Point>,
+        holes: Vec<Vec<I32Point>>,
+        scale: f64,
+        raycast_mode: I32RaycastMode,
+    ) -> Self {
+        Self::new_with_options(exterior, holes, scale, raycast_mode, None)
+    }
+
+    /// Create a polygon from scaled integer coordinates with explicit build
+    /// options; the acceleration indexes operate directly in the scaled
+    /// integer storage space. The indexes only serve the default (float)
+    /// raycast; [`I32RaycastMode::Integer`] always scans segments linearly.
+    pub fn new_with_options(
+        exterior: Vec<I32Point>,
+        holes: Vec<Vec<I32Point>>,
+        scale: f64,
+        raycast_mode: I32RaycastMode,
+        options: Option<PolygonBuildOptions>,
+    ) -> Self {
+        assert!(!exterior.is_empty(), "polygon exterior must not be empty");
+        assert!(
+            scale.is_finite() && scale > 0.0,
+            "scale must be positive and finite"
+        );
+        Self::build(exterior, holes, scale, raycast_mode, options)
+    }
+}
+
+impl<T: CoordStorage> ContainsPoint<Point> for Polygon<T> {
     fn contains_point(&self, point: Point) -> bool {
         Polygon::contains_point(self, point)
     }
@@ -1708,6 +1794,144 @@ mod tests {
         assert_eq!(stats.holes.len(), 1);
         assert!(stats.holes[0].below_threshold);
         assert!(!stats.holes[0].used_compressed_quad);
+    }
+
+    fn i32_polygon_with_segments(segments: usize, scale: f64) -> Vec<I32Point> {
+        let mut ring = Vec::with_capacity(segments + 1);
+        for i in 0..segments {
+            let theta = (i as f64) / (segments as f64) * std::f64::consts::TAU;
+            ring.push(I32Point {
+                x: (theta.cos() * scale).round() as i32,
+                y: (theta.sin() * scale).round() as i32,
+            });
+        }
+        ring.push(ring[0]);
+        ring
+    }
+
+    fn y_stripes_options() -> PolygonBuildOptions {
+        PolygonBuildOptions {
+            enable_rtree: false,
+            enable_compressed_quad: false,
+            enable_y_stripes: true,
+            rtree_min_segments: 64,
+        }
+    }
+
+    #[test]
+    fn i32_y_stripes_matches_linear_scan() {
+        let scale = 1e5;
+        let ring = i32_polygon_with_segments(256, scale);
+        let hole = i32_polygon_with_segments(96, scale * 0.4);
+
+        let linear = I32Polygon::new_with_mode(
+            ring.clone(),
+            vec![hole.clone()],
+            scale,
+            I32RaycastMode::Float,
+        );
+        let indexed = I32Polygon::new_with_options(
+            ring,
+            vec![hole],
+            scale,
+            I32RaycastMode::Float,
+            Some(y_stripes_options()),
+        );
+        assert!(indexed.index_stats().exterior.used_y_stripes);
+        assert!(indexed.index_stats().holes[0].used_y_stripes);
+
+        // Sweep radii crossing the hole boundary, the fill ring and the
+        // exterior boundary, including points snapped to the 1e-5 grid.
+        for i in 0..64 {
+            let theta = (i as f64) / 64.0 * std::f64::consts::TAU;
+            for r in [0.0, 0.2, 0.39999, 0.4, 0.40001, 0.7, 0.99999, 1.0, 1.1] {
+                let p = Point {
+                    x: theta.cos() * r,
+                    y: theta.sin() * r,
+                };
+                assert_eq!(
+                    linear.contains_point(p),
+                    indexed.contains_point(p),
+                    "mismatch at {p:?}"
+                );
+                let snapped = Point {
+                    x: (p.x * scale).round() / scale,
+                    y: (p.y * scale).round() / scale,
+                };
+                assert_eq!(
+                    linear.contains_point(snapped),
+                    indexed.contains_point(snapped),
+                    "mismatch at snapped {snapped:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn i32_y_stripes_matches_f64_y_stripes_away_from_boundary() {
+        let scale = 1e5;
+        let int_ring = i32_polygon_with_segments(256, scale);
+        let float_ring: Vec<Point> = int_ring
+            .iter()
+            .map(|p| Point {
+                x: f64::from(p.x) / scale,
+                y: f64::from(p.y) / scale,
+            })
+            .collect();
+
+        let int_poly = I32Polygon::new_with_options(
+            int_ring,
+            vec![],
+            scale,
+            I32RaycastMode::Float,
+            Some(y_stripes_options()),
+        );
+        let float_poly = Polygon::new(float_ring, vec![], Some(y_stripes_options()));
+
+        for i in 0..256 {
+            let theta = (i as f64) / 256.0 * std::f64::consts::TAU;
+            for r in [0.0, 0.3, 0.6, 0.9, 1.1, 1.5] {
+                let p = Point {
+                    x: theta.cos() * r,
+                    y: theta.sin() * r,
+                };
+                assert_eq!(
+                    float_poly.contains_point(p),
+                    int_poly.contains_point(p),
+                    "mismatch at {p:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn i32_y_stripes_candidates_match_scan() {
+        let scale = 1e5;
+        let ring = i32_polygon_with_segments(256, scale);
+        let (index, stats) = build_ring_index(&ring, &y_stripes_options());
+        let index = index.unwrap();
+        assert!(stats.used_y_stripes);
+
+        let float_ring: Vec<Point> = ring
+            .iter()
+            .map(|p| Point {
+                x: f64::from(p.x),
+                y: f64::from(p.y),
+            })
+            .collect();
+
+        for y in [
+            -1.2e5, -1e5, -0.75e5, -0.2e5, 0.0, 0.4e5, 0.99e5, 1e5, 1.2e5, 33333.0,
+        ] {
+            let mut from_index = Vec::new();
+            index.search_candidates(&ring, y, &mut from_index);
+            from_index.sort_unstable();
+
+            let mut from_scan = scan_candidates(&float_ring, y, index.x_min, index.x_max);
+            from_scan.sort_unstable();
+
+            assert_eq!(from_index, from_scan, "candidate mismatch at y={y}");
+        }
     }
 
     #[test]

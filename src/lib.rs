@@ -1073,8 +1073,18 @@ impl<T: CoordStorage> Polygon<T> {
     /// It's most used algorithm implementation, port from Go's [geojson]
     ///
     /// [geojson]: https://github.com/tidwall/geojson
-    fn contains_point_normal(&self, p: Point) -> bool {
-        if !rings_contains_point(&self.exterior, self.exterior_index.as_ref(), p, false) {
+    ///
+    /// `allow_on_edge` only applies to the exterior ring. Hole rings are
+    /// always tested with `allow_on_edge = false`, so a point lying on a
+    /// hole's boundary counts as *not* in the hole, i.e. inside the polygon
+    /// under both edge rules.
+    fn contains_point_normal(&self, p: Point, allow_on_edge: bool) -> bool {
+        if !rings_contains_point(
+            &self.exterior,
+            self.exterior_index.as_ref(),
+            p,
+            allow_on_edge,
+        ) {
             return false;
         }
 
@@ -1088,14 +1098,36 @@ impl<T: CoordStorage> Polygon<T> {
     }
 
     /// Do point-in-polygon search. `p` is in unscaled (degree) coordinates.
+    ///
+    /// A point lying exactly on the exterior boundary is reported as
+    /// **outside**. Use [`Polygon::contains_point_allow_on_edge`] when the
+    /// boundary should belong to the polygon — for example when adjacent
+    /// polygons tile a plane and a query on a shared edge must not fall
+    /// through the crack between them.
     pub fn contains_point(&self, p: Point) -> bool {
+        self.contains_point_with_edge_rule(p, false)
+    }
+
+    /// Like [`Polygon::contains_point`], but a point lying exactly on the
+    /// exterior boundary is reported as **inside**.
+    ///
+    /// For a set of polygons sharing borders this makes the boundary belong
+    /// to every polygon that touches it, so no query can land in a gap. The
+    /// flip side is that a shared edge matches more than one polygon; callers
+    /// that need a single answer must break the tie themselves (e.g. by
+    /// taking the first match in a stable iteration order).
+    pub fn contains_point_allow_on_edge(&self, p: Point) -> bool {
+        self.contains_point_with_edge_rule(p, true)
+    }
+
+    fn contains_point_with_edge_rule(&self, p: Point, allow_on_edge: bool) -> bool {
         match self.raycast_mode {
-            I32RaycastMode::Float => self.contains_point_float(p),
-            I32RaycastMode::Integer => self.contains_point_integer(p),
+            I32RaycastMode::Float => self.contains_point_float(p, allow_on_edge),
+            I32RaycastMode::Integer => self.contains_point_integer(p, allow_on_edge),
         }
     }
 
-    fn contains_point_float(&self, p: Point) -> bool {
+    fn contains_point_float(&self, p: Point, allow_on_edge: bool) -> bool {
         // `x * 1.0` is an exact identity under IEEE 754, so f64 polygons
         // (scale == 1.0) behave bit-identically to the pre-generic code.
         let scaled = Point {
@@ -1112,12 +1144,12 @@ impl<T: CoordStorage> Polygon<T> {
             return false;
         }
 
-        return self.contains_point_normal(scaled);
+        return self.contains_point_normal(scaled, allow_on_edge);
     }
 
     // Opt-in integer cross-product raycast; snaps the query to the storage
     // grid and ignores acceleration indexes.
-    fn contains_point_integer(&self, p: Point) -> bool {
+    fn contains_point_integer(&self, p: Point, allow_on_edge: bool) -> bool {
         if !p.x.is_finite() || !p.y.is_finite() {
             return false;
         }
@@ -1129,7 +1161,7 @@ impl<T: CoordStorage> Polygon<T> {
             || scaled.x > self.max.x.to_i64()
             || scaled.y < self.min.y.to_i64()
             || scaled.y > self.max.y.to_i64()
-            || !ring_contains_point_integer(&self.exterior, scaled, false)
+            || !ring_contains_point_integer(&self.exterior, scaled, allow_on_edge)
         {
             return false;
         }
@@ -1531,6 +1563,127 @@ mod tests {
         let poly = Polygon::new(square(0.0, 10.0), vec![square(3.0, 7.0)], None);
         assert!(poly.contains_point(Point { x: 1.0, y: 1.0 }));
         assert!(!poly.contains_point(Point { x: 5.0, y: 5.0 }));
+    }
+
+    fn shifted_square(min: f64, max: f64, dx: f64) -> Vec<Point> {
+        square(min, max)
+            .into_iter()
+            .map(|p| Point {
+                x: p.x + dx,
+                y: p.y,
+            })
+            .collect()
+    }
+
+    /// Two squares sharing the x == 10 border: under the default rule a query
+    /// on that border belongs to neither, which is how a tiled polygon set
+    /// grows gaps along its internal edges.
+    #[test]
+    fn polygon_allow_on_edge_closes_shared_border() {
+        for options in [
+            None,
+            // Force the acceleration indexes on so the indexed candidate
+            // scan takes the same code path as the linear one.
+            Some(PolygonBuildOptions {
+                enable_rtree: true,
+                enable_compressed_quad: true,
+                enable_y_stripes: false,
+                rtree_min_segments: 1,
+            }),
+            Some(PolygonBuildOptions {
+                enable_rtree: false,
+                enable_compressed_quad: false,
+                enable_y_stripes: true,
+                rtree_min_segments: 1,
+            }),
+        ] {
+            let left = Polygon::new(square(0.0, 10.0), vec![], options);
+            let right = Polygon::new(shifted_square(0.0, 10.0, 10.0), vec![], options);
+
+            for p in [
+                Point { x: 10.0, y: 5.0 },  // mid-edge
+                Point { x: 10.0, y: 10.0 }, // shared vertex
+                Point { x: 10.0, y: 0.0 },
+            ] {
+                assert!(!left.contains_point(p), "{p:?} {options:?}");
+                assert!(!right.contains_point(p), "{p:?} {options:?}");
+                assert!(left.contains_point_allow_on_edge(p), "{p:?} {options:?}");
+                assert!(right.contains_point_allow_on_edge(p), "{p:?} {options:?}");
+            }
+
+            // Points off the border are unaffected by the edge rule.
+            for p in [
+                Point { x: 5.0, y: 5.0 },
+                Point { x: 15.0, y: 5.0 },
+                Point { x: 25.0, y: 5.0 },
+                Point { x: 10.0, y: 25.0 },
+            ] {
+                assert_eq!(
+                    left.contains_point(p),
+                    left.contains_point_allow_on_edge(p),
+                    "{p:?} {options:?}"
+                );
+                assert_eq!(
+                    right.contains_point(p),
+                    right.contains_point_allow_on_edge(p),
+                    "{p:?} {options:?}"
+                );
+            }
+        }
+    }
+
+    /// The edge rule applies to the exterior only: a hole's boundary counts as
+    /// polygon interior either way, so the ring filling the hole and the ring
+    /// around it both claim it rather than both dropping it.
+    #[test]
+    fn polygon_allow_on_edge_leaves_hole_boundary_alone() {
+        let poly = Polygon::new(square(0.0, 10.0), vec![square(3.0, 7.0)], None);
+        let fill = Polygon::new(square(3.0, 7.0), vec![], None);
+
+        for p in [Point { x: 3.0, y: 5.0 }, Point { x: 3.0, y: 3.0 }] {
+            assert!(poly.contains_point(p), "{p:?}");
+            assert!(poly.contains_point_allow_on_edge(p), "{p:?}");
+            assert!(!fill.contains_point(p), "{p:?}");
+            assert!(fill.contains_point_allow_on_edge(p), "{p:?}");
+        }
+
+        // Inside the hole proper stays outside under both rules.
+        let inner = Point { x: 5.0, y: 5.0 };
+        assert!(!poly.contains_point(inner));
+        assert!(!poly.contains_point_allow_on_edge(inner));
+    }
+
+    #[test]
+    fn i32_polygon_allow_on_edge_closes_shared_border() {
+        let rect_i32 = |x_min, x_max| {
+            vec![
+                I32Point { x: x_min, y: 0 },
+                I32Point {
+                    x: x_min,
+                    y: 1_000_000,
+                },
+                I32Point {
+                    x: x_max,
+                    y: 1_000_000,
+                },
+                I32Point { x: x_max, y: 0 },
+                I32Point { x: x_min, y: 0 },
+            ]
+        };
+        for mode in [I32RaycastMode::Float, I32RaycastMode::Integer] {
+            let left = I32Polygon::new_with_mode(rect_i32(0, 750_000), vec![], 1e5, mode);
+            let right = I32Polygon::new_with_mode(rect_i32(750_000, 1_500_000), vec![], 1e5, mode);
+
+            let on_edge = Point { x: 7.5, y: 5.0 };
+            assert!(!left.contains_point(on_edge), "{mode:?}");
+            assert!(!right.contains_point(on_edge), "{mode:?}");
+            assert!(left.contains_point_allow_on_edge(on_edge), "{mode:?}");
+            assert!(right.contains_point_allow_on_edge(on_edge), "{mode:?}");
+
+            let outside = Point { x: 20.0, y: 5.0 };
+            assert!(!left.contains_point_allow_on_edge(outside), "{mode:?}");
+            assert!(!right.contains_point_allow_on_edge(outside), "{mode:?}");
+        }
     }
 
     #[test]
